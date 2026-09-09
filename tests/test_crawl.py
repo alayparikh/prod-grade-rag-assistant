@@ -118,6 +118,32 @@ class TestCrawl:
         assert row["scanned"] == 3 and row["finished_at"] is not None
 
 
+class TestConnect:
+    def test_shared_connection_is_usable_from_another_thread(self, tmp_path):
+        # Regression: Streamlit runs each rerun on a different thread, and a
+        # cached connection opened with the default guard raised
+        # "SQLite objects created in a thread can only be used in that same
+        # thread" on the second page view.
+        import threading
+
+        connection = crawl.connect(str(tmp_path / "m.sqlite"),
+                                   shared_across_threads=True)
+        result = {}
+
+        def read():
+            try:
+                result["n"] = connection.execute(
+                    "SELECT COUNT(*) AS n FROM files").fetchone()["n"]
+            except Exception as e:  # noqa: BLE001
+                result["error"] = e
+
+        thread = threading.Thread(target=read)
+        thread.start()
+        thread.join()
+        connection.close()
+        assert result == {"n": 0}
+
+
 class TestCensus:
     def test_totals_and_breakdown(self, db, tree):
         crawl.crawl(str(tree), db)

@@ -60,8 +60,11 @@ question → answer_question()          ← every guardrail lives here
 | `rag.py` | The engine — ingest, index, retrieve, guardrails, CLI, launcher |
 | `app.py` | Streamlit UI + per-session rate limiting (thin; logic lives in `rag.py`) |
 | `eval/run_eval.py` | Golden-set eval runner; exits non-zero on failure (CI-ready) |
-| `permissions.yaml` | Folder → group ACL map (committed) |
-| `users.yaml` | Logins + groups (git-ignored; RBAC currently dormant) |
+| `indexer/crawl.py` | Walks the share into SQLite + FTS5; the file census |
+| `indexer/__main__.py` | `python -m indexer` — the cron entrypoint |
+| `search/metadata.py` | Question → file-name search over the catalogue |
+| `auth/smb.py` | NAS login and per-file access checks |
+| `permissions.yaml` | Folder → group ACL map, pending NAS ACL tagging |
 
 **Adaptive retrieval breadth.** `k` is derived from corpus size (`compute_k()`), not hardcoded — roughly +1 per 100 chunks, clamped to 4–20, overridable with `RAG_RETRIEVAL_K`. A fixed `k=4` was fine at 54 chunks (the top 7% of the corpus) but silently starved recall at 1,038 chunks (top 0.4%): a document listing every employee stopped being retrieved for "how many employees are there", and the assistant correctly refused rather than guessing. Wider retrieval costs more per question — measured ~$0.011 → ~$0.020 — which is the deliberate tradeoff.
 
@@ -82,6 +85,7 @@ All enforced inside `answer_question()`:
 
 - **Input length cap** (2000 chars) — rejected before retrieval or any API call.
 - **Prompt-injection resistance** — retrieved content is wrapped in `<retrieved_context>` tags and explicitly framed as untrusted data, not instructions.
+- **NAS access check** — every retrieved chunk's file is opened as the asking user before generation; denied files are dropped and an all-denied result never reaches the model.
 - **Empty-context short-circuit** — zero retrieved chunks means the LLM is never called. Fires only on a genuinely empty result set (e.g. ACLs filtered everything out), not on retrieved-but-irrelevant content.
 - **Typed error handling** — auth/rate-limit/timeout/connection failures each get a distinct message instead of a raw traceback.
 - **Secret redaction** — narrow, high-precision patterns only (AWS keys, API keys, SSN format). A generic "long number" pattern would false-positive on medical record IDs and phone numbers.
@@ -103,6 +107,11 @@ Token counts come from a `get_usage_metadata_callback()` wrapping the whole pipe
 
 Source **paths** are logged, never chunk text — the log file isn't access-controlled.
 
+`num_retrieved` alongside `num_sources` shows how many chunks the NAS check
+removed: a persistent gap means the index is tagged more loosely than the
+NAS actually permits. Logins, failed logins, file searches and thumbs
+up/down are logged the same way, with the username and never the password.
+
 ## Evals
 
 `eval/golden_set.yaml` holds test questions grounded in your actual `docs/` content — fact lookups, out-of-scope negatives (should refuse), a multi-turn follow-up, and a prompt-injection attempt. Git-ignored; `eval/golden_set.example.yaml` is the schema template.
@@ -123,16 +132,67 @@ python eval/run_eval.py --live   # real API calls — checks generated answers
 
 The fixture corpus is 30 chunks of deliberately competing content — several similar résumés plus engineering runbooks — because a small or semantically well-separated corpus lets every query retrieve everything, and an eval that can't fail is worse than no eval.
 
-## Multi-user access control (built, currently disabled)
+## NAS deployment
 
-`rag.py` supports scoping documents by group, mirroring NAS-style folder ACLs (only HR sees `docs/HR/`). It's dormant — `app.py` calls `build_chain(vectorstore)` with no restriction, so all documents are visible with no login. To enable:
+Runs on a host on the LAN beside the NAS, indexing a read-only mount of the share.
 
-1. `cp users.yaml.example users.yaml` — set logins, passwords, and per-user groups.
-2. Map folders to groups in `permissions.yaml`. `"ALL"` is a superuser group that bypasses filtering.
-3. Add the `streamlit-authenticator` login gate to `app.py` and pass the user's groups into `build_chain(vectorstore, allowed_groups)`.
-4. Run `--cli --reindex` after editing `permissions.yaml` — sync only re-tags files whose content changed.
+```
+NAS  --(SMB, read-only, service account)-->  /mnt/nas  -->  indexer (nightly cron)
+NAS  <--(SMB, each user's own credentials)--  app      <--  browser (TLS)
+```
 
-Empty group list fails closed (denies everything), not open.
+Set `RAG_DOCS_PATH=/mnt/nas`, `RAG_NAS_HOST`, and `RAG_NAS_SHARE`, then:
+
+```bash
+python -m indexer --census   # file counts per type; decides OCR scope before indexing 50 GB
+python -m indexer            # census + content index (nightly cron target)
+python -m indexer --reindex  # rebuild the vector store from scratch
+```
+
+The indexer is a separate entrypoint from the app on purpose: walking the
+share must not depend on anyone having a browser tab open, and the app must
+not need a writable mount.
+
+### Authorization comes from the NAS
+
+There is no user table and no group file. Login opens a real SMB session
+with the user's own credentials, so an AD/LDAP-joined NAS validates against
+the directory transparently. The password is held in server memory for the
+session only — never logged, never written to disk, never passed to
+anything but `auth/smb.login`.
+
+Every question is authorized in two stages:
+
+1. **Index-time tags** (pre-filter) — chunks carry the groups allowed on
+   their folder, filtered in Chroma. Cheap but a stale snapshot.
+2. **Query-time check** (authoritative) — before any chunk reaches Claude,
+   each candidate file is opened for read over SMB *as that user*. Anything
+   that fails to open is dropped, including files that merely no longer
+   exist. Revoking someone's NAS access takes effect on their next
+   question, with no reindex.
+
+Retrieval over-fetches (`RAG_OVER_FETCH`, default 3x) so filtering still
+leaves enough context, and truncates back afterwards so users who can read
+everything don't pay for triple the prompt. A fully-filtered result returns
+the same wording as an empty one — a refusal must not reveal that a
+document exists.
+
+| Env | Purpose |
+|---|---|
+| `RAG_NAS_HOST` / `RAG_NAS_SHARE` | NAS to authenticate and check files against |
+| `RAG_DOCS_PATH` | Read-only mount of that share (default `/mnt/nas`) |
+| `RAG_SESSION_IDLE_MIN` | Idle minutes before a login expires (default 30) |
+| `RAG_AUTH_MODE=none` | Local development only — no login, no access checks |
+| `RAG_META_DB` | File catalogue (default `<persist>/meta.sqlite`) |
+| `RAG_EXCLUDE_GLOBS` | Extra directory/file globs to skip while crawling |
+
+### Two search modes
+
+**Ask about content** is the RAG path. **Find a file** matches names and
+folder paths through SQLite FTS5 — it costs nothing per query and covers
+the files whose contents are never indexed (images, drawings, archives),
+which on a disorganized share is most of them. Both render citations as
+NAS paths so people can go open the file.
 
 ## Notes
 

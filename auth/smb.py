@@ -57,9 +57,14 @@ def to_share_path(local_path, mount=None):
 # Links the UI renders next to a citation. Windows Explorer wants a UNC
 # path; macOS Finder and Linux file managers open smb:// URLs.
 def nas_links(local_path, host=None, share=None, mount=None):
-    share_path = to_share_path(local_path, mount)
     host = host or NAS_HOST
     share = share or NAS_SHARE
+    if not host:
+        # No NAS configured (local development). Half-built links like
+        # "\\\shared\file" look like a path and silently fail to open, so
+        # callers are told to show the plain path instead.
+        raise ValueError("no NAS host configured; cannot build a share link")
+    share_path = to_share_path(local_path, mount)
     return {
         "unc": f"\\\\{host}\\{share}\\{share_path}",
         "smb": f"smb://{host}/{share}/{share_path.replace(chr(92), '/')}",

@@ -72,6 +72,13 @@ class TestToSharePath:
 
 
 class TestNasLinks:
+    def test_refuses_to_build_a_link_without_a_host(self, monkeypatch):
+        # A half-built "\\\shared\file" looks like a path in the UI and
+        # silently fails to open; callers show the plain path instead.
+        monkeypatch.setattr(smb, "NAS_HOST", "")
+        with pytest.raises(ValueError):
+            smb.nas_links("/mnt/nas/a.txt", mount="/mnt/nas")
+
     def test_renders_unc_and_smb_forms(self):
         links = smb.nas_links("/mnt/nas/HR/roster.xlsx", host="nas.local",
                               share="shared", mount="/mnt/nas")

@@ -39,6 +39,17 @@ jobs:
       - name: Unit tests
         run: python -m pytest tests/ -q
 
+      # Exercises the crawler and the layer-1 file search end to end against
+      # the fixture corpus. No API key and no embeddings, so it is fast and
+      # free; it would have caught the FTS/files drift on a renamed file.
+      - name: File census (fixture corpus)
+        env:
+          RAG_DOCS_PATH: ./eval/fixtures/docs
+          RAG_PERSIST_PATH: ${{ runner.temp }}/ci_index
+          RAG_META_DB: ${{ runner.temp }}/ci_index/meta.sqlite
+          RAG_LOG_PATH: ${{ runner.temp }}/ci_logs/events.jsonl
+        run: python -m indexer --census
+
       # Runs against the committed synthetic corpus in eval/fixtures/, not the
       # real docs/ - those are git-ignored because they hold personal records.
       - name: Retrieval eval (fixture corpus)

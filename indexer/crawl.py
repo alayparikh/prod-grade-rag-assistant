@@ -81,10 +81,21 @@ CREATE TABLE IF NOT EXISTS crawl_runs (
 """
 
 
-def connect(db_path=None):
+# check_same_thread stays on by default (the indexer is single-threaded and
+# the guard is worth keeping there). The web app opts out: Streamlit runs
+# each rerun on a different script-runner thread, so a cached connection is
+# used from many threads over its life. That is safe here only because
+# CPython's sqlite3 reports threadsafety level 3 (serialized), which is
+# asserted at call time rather than assumed.
+def connect(db_path=None, shared_across_threads=False):
     path = db_path or META_DB_PATH
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    connection = sqlite3.connect(path)
+    if shared_across_threads and sqlite3.threadsafety < 3:
+        raise RuntimeError(
+            "sqlite3 is not built in serialized mode; a connection cannot be "
+            "shared across threads on this interpreter"
+        )
+    connection = sqlite3.connect(path, check_same_thread=not shared_across_threads)
     connection.row_factory = sqlite3.Row
     # WAL lets the Streamlit app read the census while the nightly indexer
     # is still writing it, instead of blocking on the writer's lock.
