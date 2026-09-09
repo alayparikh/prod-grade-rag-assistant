@@ -1,0 +1,15 @@
+# Copy to canonical_sources.yaml.
+#
+# Aggregate questions ("how many employees do we have") are answered from
+# one authoritative document rather than from retrieved fragments.
+# Counting rows across the top-k chunks of a roster is exactly how a
+# confident wrong number is produced, so the assistant will not guess
+# which file is the roster - name it here.
+#
+# The key is the thing being counted, as someone would say it. The value
+# is the file's path inside the mount (RAG_DOCS_PATH).
+
+sources:
+  employees: /mnt/nas/HR/employee_roster.xlsx
+  # leave requests: /mnt/nas/HR/leave_register.xlsx
+  # customers: /mnt/nas/Sales/customer_list.xlsx

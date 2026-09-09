@@ -13,9 +13,13 @@ services:
     environment:
       RAG_AUTH_MODE: nas
     volumes:
+      # On a Synology this is a local bind of the shared folder,
+      # e.g. /volume1/company:/mnt/nas:ro - no CIFS mount needed.
       - /mnt/nas:/mnt/nas:ro
       - index:/data
-    expose: ["8501"]
+    # Published on loopback so DSM's reverse proxy (or Caddy) can reach it
+    # while the app itself is never exposed to the LAN unencrypted.
+    ports: ["127.0.0.1:8501:8501"]
 
   # Indexes once at start, then nightly. A plain sleep loop rather than a
   # cron daemon: one process, one log stream, and no second scheduler to
@@ -27,14 +31,19 @@ services:
     volumes:
       - /mnt/nas:/mnt/nas:ro
       - index:/data
-    command: >
-      sh -c 'while true; do
-        python -m indexer || echo "indexer run failed";
-        sleep $$(( $$(date -d "tomorrow 02:00" +%s) - $$(date +%s) ));
-      done'
+    # Scheduling lives in Python, not a shell one-liner: the container's
+    # shell, its date implementation and YAML quoting are three things
+    # that can each silently break a schedule nobody looks at until the
+    # index is a week stale.
+    command: ["python", "-m", "indexer", "--loop"]
 
+  # Only for a separate Linux host. On a Synology, leave this out and use
+  # DSM's own reverse proxy instead: DSM already owns ports 80 and 443, so
+  # this container cannot bind them, and DSM can issue the certificate.
+  #   docker compose up -d app indexer
   caddy:
     image: caddy:2-alpine
+    profiles: ["standalone-host"]
     restart: unless-stopped
     ports: ["443:443", "80:80"]
     volumes:

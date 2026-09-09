@@ -63,6 +63,21 @@ def run_summaries(connection, verbose=True):
     return stats
 
 
+# Seconds until the next occurrence of HH:MM in local time. Kept in Python
+# rather than a shell one-liner because the container's shell, its `date`
+# implementation and YAML quoting are three things that can each silently
+# break a schedule nobody looks at until the index is a week stale.
+def seconds_until(target, now=None):
+    from datetime import datetime, timedelta
+
+    now = now or datetime.now()
+    hour, minute = (int(part) for part in target.split(":"))
+    nxt = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if nxt <= now:
+        nxt += timedelta(days=1)
+    return max(1, int((nxt - now).total_seconds()))
+
+
 def main(argv=None):
     load_dotenv()
 
@@ -73,6 +88,10 @@ def main(argv=None):
                         help="crawl and report file counts only; no embedding")
     parser.add_argument("--reindex", action="store_true",
                         help="delete and rebuild the vector store")
+    parser.add_argument("--loop", action="store_true",
+                        help="index once, then repeat every night at --at")
+    parser.add_argument("--at", default=os.environ.get("RAG_INDEX_AT", "02:00"),
+                        help="local time to run the nightly pass (HH:MM)")
     parser.add_argument("--summaries", action="store_true",
                         help="also generate one-line folder summaries (calls "
                              "the Claude API and sends short excerpts of "
@@ -126,5 +145,30 @@ def main(argv=None):
     return 0
 
 
+def run_forever(argv, at):
+    import time
+
+    while True:
+        try:
+            main(argv)
+        except KeyboardInterrupt:
+            return 0
+        except Exception as e:  # noqa: BLE001 - a failed night must not end the loop
+            print(f"Indexing run failed: {e}", file=sys.stderr)
+            rag.log_event({"event": "index_run_failed", "error": str(e)})
+
+        delay = seconds_until(at)
+        print(f"Next run at {at} (in {delay // 3600}h {(delay % 3600) // 60}m).")
+        time.sleep(delay)
+
+
 if __name__ == "__main__":
+    _args, _rest = None, [a for a in sys.argv[1:] if a != "--loop"]
+    if "--loop" in sys.argv[1:]:
+        import argparse as _argparse
+
+        _peek = _argparse.ArgumentParser(add_help=False)
+        _peek.add_argument("--at", default=os.environ.get("RAG_INDEX_AT", "02:00"))
+        _known, _ = _peek.parse_known_args(sys.argv[1:])
+        sys.exit(run_forever(_rest, _known.at))
     sys.exit(main())

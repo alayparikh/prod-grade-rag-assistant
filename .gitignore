@@ -17,3 +17,4 @@ venv/
 
 # container runtime data
 /data/
+canonical_sources.yaml

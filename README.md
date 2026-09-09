@@ -134,7 +134,11 @@ The fixture corpus is 30 chunks of deliberately competing content — several si
 
 ## NAS deployment
 
-Runs on a host on the LAN beside the NAS, indexing a read-only mount of the share.
+**Step-by-step Synology instructions are in [DEPLOY.md](DEPLOY.md).** This
+section covers how it works; that one covers what to type.
+
+Runs on a host on the LAN beside the NAS, or on the NAS itself, indexing a
+read-only mount of the share.
 
 ```
 NAS  --(SMB, read-only, service account)-->  /mnt/nas  -->  indexer (nightly cron)
@@ -189,11 +193,14 @@ document exists.
 ### Deploying
 
 ```bash
-docker compose up -d --build
+docker compose up -d --build                      # separate Linux host
+docker compose up -d --build app indexer          # on a Synology, DSM owns 443
 ```
 
-`app` serves the UI, `indexer` re-indexes nightly, and `caddy` terminates
-TLS. Both Python services mount the share read-only, so a bug here cannot
+`app` serves the UI, `indexer` re-indexes nightly at `RAG_INDEX_AT`, and
+`caddy` terminates TLS. On a Synology, leave Caddy out and use DSM's own
+reverse proxy — DSM already owns ports 80 and 443. See
+[DEPLOY.md](DEPLOY.md). Both Python services mount the share read-only, so a bug here cannot
 write to the NAS even if the service account is later over-granted. The
 index lives in a named volume — back that up and test a restore, because
 rebuilding it from 50 GB is hours of OCR and embedding.
