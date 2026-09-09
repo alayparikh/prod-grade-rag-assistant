@@ -268,14 +268,56 @@ def load_file(path):
     return loader.load()
 
 
+# Streamed rather than read whole: the corpus is a 50 GB network share and
+# a single video or disk image would otherwise be pulled entirely into
+# memory just to be fingerprinted.
+HASH_BLOCK_SIZE = 1024 * 1024
+
+
 def file_hash(path):
-    return hashlib.sha256(open(path, "rb").read()).hexdigest()
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(HASH_BLOCK_SIZE), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+# What the manifest records per file. size+mtime is the cheap check that
+# decides whether the file is worth opening at all; sha256 is the
+# authoritative one that decides whether it is worth re-embedding. Keeping
+# both means a touched-but-identical file (a copy, a restore, a metadata
+# change) costs one read instead of a re-embed of every chunk.
+def file_stamp(path, stat_result=None, previous=None):
+    stat_result = stat_result or os.stat(path)
+    stamp = {"size": stat_result.st_size, "mtime_ns": stat_result.st_mtime_ns}
+
+    if previous and _unchanged_on_disk(stamp, previous):
+        stamp["sha256"] = previous["sha256"]
+        return stamp, False
+
+    stamp["sha256"] = file_hash(path)
+    return stamp, True
+
+
+def _unchanged_on_disk(stamp, previous):
+    return (previous.get("size") == stamp["size"]
+            and previous.get("mtime_ns") == stamp["mtime_ns"]
+            and previous.get("sha256"))
+
+
+# Manifests written before stamps were introduced map path -> sha256 string.
+# Upgrading them in place would mean re-reading the whole corpus, so they
+# are read as-is and each file is re-stamped the first time it is examined.
+def _as_stamp(value):
+    if isinstance(value, str):
+        return {"size": None, "mtime_ns": None, "sha256": value}
+    return value or {}
 
 
 def load_manifest():
     if os.path.exists(MANIFEST_PATH):
         with open(MANIFEST_PATH) as f:
-            return json.load(f)
+            return {path: _as_stamp(value) for path, value in json.load(f).items()}
     return {}
 
 
@@ -301,16 +343,33 @@ def get_embeddings():
 # Re-embed only files that are new or whose content changed since the last
 # run, and drop chunks for files that were removed. Unchanged files are
 # never re-read or re-embedded.
-def sync_vectorstore(store):
-    current_files = discover_files()
-    current_hashes = {path: file_hash(path) for path in current_files}
+def sync_vectorstore(store, paths=None):
+    current_files = discover_files() if paths is None else sorted(paths)
 
     manifest = load_manifest()
-    changed_or_new = [p for p in current_hashes if manifest.get(p) != current_hashes[p]]
-    removed = [p for p in manifest if p not in current_hashes]
+    current_stamps = {}
+    reads = 0
+    for path in current_files:
+        try:
+            stamp, was_read = file_stamp(path, previous=manifest.get(path))
+        except OSError as e:
+            # One unreadable file must not abort a nightly run over a share
+            # that is still being written to.
+            log_event({"event": "stamp_error", "source": path, "error": str(e)})
+            continue
+        current_stamps[path] = stamp
+        reads += was_read
+
+    changed_or_new = [
+        p for p, stamp in current_stamps.items()
+        if manifest.get(p, {}).get("sha256") != stamp["sha256"]
+    ]
+    removed = [p for p in manifest if p not in current_stamps]
 
     if not changed_or_new and not removed:
-        print(f"Index up to date ({store._collection.count()} chunks).")
+        print(f"Index up to date ({store._collection.count()} chunks, "
+              f"{reads} file(s) re-read).")
+        save_manifest(current_stamps)  # refresh mtimes so the next run reads none
         return
 
     for path in removed + changed_or_new:
@@ -330,11 +389,11 @@ def sync_vectorstore(store):
             store.add_documents(chunks)
         added_chunks += len(chunks)
 
-    manifest = current_hashes
-    save_manifest(manifest)
+    save_manifest(current_stamps)
 
     print(f"Synced index: {len(changed_or_new)} new/updated file(s) "
-          f"({added_chunks} chunks), {len(removed)} removed file(s). "
+          f"({added_chunks} chunks), {len(removed)} removed file(s), "
+          f"{reads} file(s) re-read. "
           f"Total: {store._collection.count()} chunks.")
 
 

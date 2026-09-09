@@ -1,0 +1,101 @@
+"""Indexer entrypoint: `python -m indexer`.
+
+Runs on the host next to the NAS, on a nightly cron, as the read-only
+service account. Separate from the web app on purpose - the app must not
+be the thing that decides to walk 50 GB, and the indexer must not need an
+HTTP port.
+
+    python -m indexer --census      # layer 1 only, then print the file census
+    python -m indexer               # census + content index
+    python -m indexer --reindex     # rebuild the vector store from scratch
+"""
+import argparse
+import os
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from dotenv import load_dotenv  # noqa: E402
+
+import rag  # noqa: E402
+from indexer import crawl  # noqa: E402
+
+
+def run_crawl(root, connection, verbose=True):
+    started = time.time()
+    errors = []
+
+    def note(path, error):
+        errors.append((path, error))
+        if verbose and len(errors) <= 20:
+            print(f"  skipped {path}: {error}", file=sys.stderr)
+
+    stats = crawl.crawl(root, connection, on_error=note)
+    elapsed = time.time() - started
+
+    rag.log_event({"event": "crawl", "root": root, "elapsed_s": round(elapsed, 1), **stats})
+    if verbose:
+        print(f"Census: {stats['scanned']:,} files scanned in {elapsed:.0f}s "
+              f"({stats['added']} new, {stats['updated']} updated, "
+              f"{stats['removed']} removed, {stats['errors']} unreadable).")
+    return stats
+
+
+def main(argv=None):
+    load_dotenv()
+
+    parser = argparse.ArgumentParser(description="Index the NAS share")
+    parser.add_argument("--root", default=rag.DOCS_PATH,
+                        help="directory to index (default: RAG_DOCS_PATH)")
+    parser.add_argument("--census", action="store_true",
+                        help="crawl and report file counts only; no embedding")
+    parser.add_argument("--reindex", action="store_true",
+                        help="delete and rebuild the vector store")
+    args = parser.parse_args(argv)
+
+    if not os.path.isdir(args.root):
+        print(f"{args.root} is not a directory. Is the NAS mounted?", file=sys.stderr)
+        return 1
+
+    connection = crawl.connect()
+    try:
+        run_crawl(args.root, connection)
+
+        report = crawl.census(connection)
+        print()
+        print(crawl.format_census(report))
+        rag.log_event({"event": "census",
+                       "total_files": report["total_files"],
+                       "total_bytes": report["total_bytes"],
+                       "indexable_files": report["indexable_files"],
+                       "indexable_bytes": report["indexable_bytes"]})
+
+        if args.census:
+            return 0
+
+        paths = crawl.indexable_paths(connection)
+        print(f"\nIndexing {len(paths):,} text-bearing file(s)...")
+    finally:
+        connection.close()
+
+    # Embeddings are local, so this costs time rather than money; the
+    # vector store is opened here (not in the app) so a nightly run never
+    # depends on anyone having a browser tab open.
+    embeddings = rag.get_embeddings()
+    if args.reindex and os.path.isdir(rag.PERSIST_PATH):
+        import shutil
+        shutil.rmtree(rag.PERSIST_PATH)
+
+    from langchain_chroma import Chroma
+    store = Chroma(
+        embedding_function=embeddings,
+        persist_directory=rag.PERSIST_PATH,
+        collection_name="docs",
+    )
+    rag.sync_vectorstore(store, paths=paths)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
