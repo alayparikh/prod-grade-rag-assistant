@@ -32,6 +32,7 @@ def tree(tmp_path):
     (root / "HR" / "employee_roster.xlsx").write_text("roster")
     (root / "HR" / "policy.pdf").write_text("policy")
     (root / "Marketing" / "2026" / "Diwali_Flyer_Final.png").write_text("img")
+    (root / "Marketing" / "archive.zip").write_text("zip")
     (root / "@eaDir" / "thumb.jpg").write_text("thumb")
     (root / ".DS_Store").write_text("junk")
     return root
@@ -45,7 +46,8 @@ def paths_in(connection):
 class TestWalkFiles:
     def test_skips_nas_housekeeping_and_os_litter(self, tree):
         found = {os.path.basename(p) for p, _ in crawl.walk_files(str(tree))}
-        assert found == {"employee_roster.xlsx", "policy.pdf", "Diwali_Flyer_Final.png"}
+        assert found == {"employee_roster.xlsx", "policy.pdf",
+                         "Diwali_Flyer_Final.png", "archive.zip"}
 
     def test_unreadable_directory_is_reported_not_fatal(self, tmp_path):
         root = tmp_path / "nas"
@@ -68,14 +70,15 @@ class TestWalkFiles:
 class TestCrawl:
     def test_first_run_records_every_eligible_file(self, db, tree):
         stats = crawl.crawl(str(tree), db)
-        assert stats["added"] == 3
-        assert paths_in(db) == ["Diwali_Flyer_Final.png", "employee_roster.xlsx", "policy.pdf"]
+        assert stats["added"] == 4
+        assert paths_in(db) == ["Diwali_Flyer_Final.png", "archive.zip",
+                                "employee_roster.xlsx", "policy.pdf"]
 
     def test_second_run_is_a_no_op(self, db, tree):
         crawl.crawl(str(tree), db)
         stats = crawl.crawl(str(tree), db)
         assert (stats["added"], stats["updated"], stats["removed"]) == (0, 0, 0)
-        assert stats["scanned"] == 3
+        assert stats["scanned"] == 4
 
     def test_modified_file_is_updated(self, db, tree):
         crawl.crawl(str(tree), db)
@@ -109,13 +112,25 @@ class TestCrawl:
     def test_marks_only_loadable_extensions_as_indexable(self, db, tree):
         crawl.crawl(str(tree), db)
         indexable = {os.path.basename(p) for p in crawl.indexable_paths(db)}
-        assert indexable == {"employee_roster.xlsx", "policy.pdf"}
-        assert "Diwali_Flyer_Final.png" not in indexable  # censused, not text-indexed
+        # Images are indexable because OCR may read them; an archive is
+        # censused so it can still be found by name, never text-indexed.
+        assert indexable == {"employee_roster.xlsx", "policy.pdf",
+                             "Diwali_Flyer_Final.png"}
+        assert "archive.zip" not in indexable
 
     def test_records_a_run_summary(self, db, tree):
         crawl.crawl(str(tree), db)
         row = db.execute("SELECT * FROM crawl_runs").fetchone()
-        assert row["scanned"] == 3 and row["finished_at"] is not None
+        assert row["scanned"] == 4 and row["finished_at"] is not None
+
+
+class TestExtensionListsAgree:
+    def test_crawler_and_loader_agree_on_what_is_indexable(self):
+        # A file the crawler queues but load_file() cannot read is retried
+        # and logged as an error on every nightly run, forever.
+        import rag
+
+        assert crawl.INDEXABLE_EXTENSIONS == rag.LOADABLE_EXTENSIONS
 
 
 class TestConnect:
@@ -148,10 +163,10 @@ class TestCensus:
     def test_totals_and_breakdown(self, db, tree):
         crawl.crawl(str(tree), db)
         report = crawl.census(db)
-        assert report["total_files"] == 3
-        assert report["indexable_files"] == 2
-        assert {r["ext"] for r in report["by_ext"]} == {".xlsx", ".pdf", ".png"}
-        assert "3 files" in crawl.format_census(report)
+        assert report["total_files"] == 4
+        assert report["indexable_files"] == 3
+        assert {r["ext"] for r in report["by_ext"]} == {".xlsx", ".pdf", ".png", ".zip"}
+        assert "4 files" in crawl.format_census(report)
 
     def test_scales_units_to_the_data(self):
         # A 50 GB share and a 13-file fixture corpus both have to read
@@ -185,9 +200,11 @@ class TestSearchFiles:
         assert [r["name"] for r in results] == ["Diwali_Flyer_Final.png"]
 
     def test_finds_by_folder_name(self, db, tree):
+        # A folder-name hit returns everything filed under it, including
+        # types the content layer never reads.
         crawl.crawl(str(tree), db)
         results = metadata.search_files(db, metadata.FileQuery(terms=["marketing"]))
-        assert [r["name"] for r in results] == ["Diwali_Flyer_Final.png"]
+        assert {r["name"] for r in results} == {"Diwali_Flyer_Final.png", "archive.zip"}
 
     def test_extension_filter(self, db, tree):
         crawl.crawl(str(tree), db)

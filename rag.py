@@ -58,6 +58,18 @@ MAX_QUESTION_LENGTH = 2000  # input guardrail: reject before any retrieval/LLM c
 LOG_PATH = os.environ.get("RAG_LOG_PATH", "./logs/events.jsonl")
 LOG_MAX_BYTES = int(os.environ.get("RAG_LOG_MAX_BYTES", 10 * 1024 * 1024))
 LOG_BACKUP_COUNT = 5  # with LOG_MAX_BYTES, caps the log directory at ~50MB
+# Spreadsheets on a shared drive can run to hundreds of thousands of rows
+# (exports, logs). Past a few thousand rows a sheet is a database, not a
+# document, and embedding all of it buries every real document in the
+# index; the cap keeps the head of the sheet, where the schema and the
+# representative rows are.
+XLSX_MAX_ROWS = int(os.environ.get("RAG_XLSX_MAX_ROWS", 2000))
+
+OCR_ENABLED = os.environ.get("RAG_OCR", "1") != "0"
+OCR_LANGS = os.environ.get("RAG_OCR_LANGS", "eng")
+OCR_MAX_PAGES = int(os.environ.get("RAG_OCR_MAX_PAGES", 50))
+OCR_DPI = int(os.environ.get("RAG_OCR_DPI", 200))
+
 NO_CONTEXT_ANSWER = "I don't have information on that in the indexed documents."
 
 # When a per-file access check is in play, retrieval over-fetches by this
@@ -91,7 +103,19 @@ _SECRET_PATTERNS = [
     (re.compile(r"\bsk-ant-[A-Za-z0-9\-_]{20,}\b"), "[REDACTED-API-KEY]"),
     (re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"), "[REDACTED-API-KEY]"),
     (re.compile(r"\b\d{3}-\d{2}-\d{4}\b"), "[REDACTED-SSN]"),
+    # Indian PAN: five letters, four digits, one letter. The shape is
+    # distinctive enough to stand alone.
+    (re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b"), "[REDACTED-PAN]"),
 ]
+
+# Aadhaar is twelve digits, a shape shared with order numbers, phone
+# numbers with country codes, and invoice references - all of which appear
+# in these documents. Redacting on shape alone would corrupt legitimate
+# answers, so it is redacted only when the surrounding text names it.
+_AADHAAR_CONTEXT = re.compile(
+    r"(?i)\b(?:aadhaar|aadhar|uidai|uid)\b[^\n]{0,30}?"
+    r"(\b\d{4}[ -]?\d{4}[ -]?\d{4}\b)"
+)
 
 
 def redact_secrets(text):
@@ -99,7 +123,12 @@ def redact_secrets(text):
     for pattern, placeholder in _SECRET_PATTERNS:
         text, count = pattern.subn(placeholder, text)
         redacted = redacted or count > 0
-    return text, redacted
+
+    def _mask_aadhaar(match):
+        return match.group(0).replace(match.group(1), "[REDACTED-AADHAAR]")
+
+    text, count = _AADHAAR_CONTEXT.subn(_mask_aadhaar, text)
+    return text, redacted or count > 0
 
 
 _event_logger = None
@@ -205,6 +234,15 @@ def build_group_filter(allowed_groups):
     return conditions[0] if len(conditions) == 1 else {"$or": conditions}
 
 
+# Extensions load_file() can turn into text. Images are included only
+# because OCR may be available; load_file returns nothing for them when it
+# is not, and a chunkless file is skipped downstream.
+LOADABLE_EXTENSIONS = frozenset({
+    ".pdf", ".txt", ".md", ".docx", ".xlsx", ".pptx", ".eml", ".csv",
+    ".png", ".jpg", ".jpeg", ".tif", ".tiff",
+})
+
+
 # List eligible files under docs/ (skips hidden files, filters by extension)
 def discover_files():
     if not os.path.isdir(DOCS_PATH):
@@ -218,7 +256,7 @@ def discover_files():
             if file.startswith("."):  # .DS_Store, AppleDouble ._ files
                 continue
             ext = os.path.splitext(file)[1].lower()
-            if ext in (".pdf", ".txt", ".md", ".docx"):
+            if ext in LOADABLE_EXTENSIONS:
                 paths.append(os.path.join(root, file))
 
     return sorted(paths)
@@ -256,16 +294,175 @@ def load_docx(path):
     return [Document(page_content=text, metadata={"source": path})]
 
 
+# A spreadsheet's meaning lives in the relationship between a row's cells,
+# so rows are flattened to "header: value" pairs rather than bare cell
+# dumps. A roster row read as "Alay Parikh | Engineering | 2024-03-01" is
+# nearly useless to retrieval; "Name: Alay Parikh | Team: Engineering" is
+# answerable. Formulas are read as their last cached value, which is what
+# a reader would see.
+def load_xlsx(path, max_rows_per_sheet=None):
+    from openpyxl import load_workbook
+
+    max_rows_per_sheet = max_rows_per_sheet or XLSX_MAX_ROWS
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    try:
+        blocks = []
+        for sheet in workbook.worksheets:
+            rows = sheet.iter_rows(values_only=True)
+            header = next(rows, None)
+            if header is None:
+                continue
+            labels = [str(c).strip() if c is not None else "" for c in header]
+
+            lines = [f"Sheet: {sheet.title}", " | ".join(l for l in labels if l)]
+            for i, row in enumerate(rows):
+                if i >= max_rows_per_sheet:
+                    lines.append(f"[... {sheet.title} truncated at "
+                                 f"{max_rows_per_sheet} rows]")
+                    break
+                cells = [
+                    f"{labels[j]}: {value}" if j < len(labels) and labels[j] else str(value)
+                    for j, value in enumerate(row) if value is not None
+                ]
+                if cells:
+                    lines.append(" | ".join(cells))
+            if len(lines) > 2:
+                blocks.append("\n".join(lines))
+    finally:
+        workbook.close()
+
+    return [Document(page_content="\n\n".join(blocks), metadata={"source": path})]
+
+
+# Slide text plus speaker notes, which often carry the actual explanation
+# a slide only gestures at.
+def load_pptx(path):
+    from pptx import Presentation
+
+    presentation = Presentation(path)
+    blocks = []
+    for number, slide in enumerate(presentation.slides, start=1):
+        lines = [f"Slide {number}"]
+        for shape in slide.shapes:
+            if shape.has_text_frame and shape.text_frame.text.strip():
+                lines.append(shape.text_frame.text.strip())
+            if getattr(shape, "has_table", False):
+                for row in shape.table.rows:
+                    cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                    if cells:
+                        lines.append(" | ".join(cells))
+        if slide.has_notes_slide:
+            notes = slide.notes_slide.notes_text_frame.text.strip()
+            if notes:
+                lines.append(f"Notes: {notes}")
+        if len(lines) > 1:
+            blocks.append("\n".join(lines))
+
+    return [Document(page_content="\n\n".join(blocks), metadata={"source": path})]
+
+
+# Headers carry most of an email's searchable value (who, when, subject),
+# so they are kept as text rather than dropped in favour of the body.
+def load_eml(path):
+    import email
+    from email import policy
+
+    with open(path, "rb") as handle:
+        message = email.message_from_binary_file(handle, policy=policy.default)
+
+    lines = [f"{field}: {message[field]}"
+             for field in ("From", "To", "Cc", "Date", "Subject") if message[field]]
+
+    body = message.get_body(preferencelist=("plain", "html"))
+    if body is not None:
+        text = body.get_content()
+        if body.get_content_subtype() == "html":
+            text = re.sub(r"<[^>]+>", " ", text)
+        lines.append("")
+        lines.append(re.sub(r"[ \t]+", " ", text).strip())
+
+    attachments = [part.get_filename() for part in message.iter_attachments()
+                   if part.get_filename()]
+    if attachments:
+        lines.append("Attachments: " + ", ".join(attachments))
+
+    return [Document(page_content="\n".join(lines), metadata={"source": path})]
+
+
+# OCR is opt-in and degrades quietly: on a host without Tesseract installed
+# a scanned document is simply not text-indexed, which is the state it was
+# already in. The alternative - failing the nightly run over a missing
+# system binary - would be worse.
+def ocr_available():
+    if not OCR_ENABLED:
+        return False
+    try:
+        import pytesseract
+        pytesseract.get_tesseract_version()
+    except Exception:  # noqa: BLE001 - missing module or missing binary alike
+        return False
+    return True
+
+
+def load_image_ocr(path):
+    import pytesseract
+    from PIL import Image
+
+    with Image.open(path) as image:
+        text = pytesseract.image_to_string(image, lang=OCR_LANGS)
+    return [Document(page_content=text.strip(),
+                     metadata={"source": path, "extraction": "ocr"})]
+
+
+# A PDF with no extractable text is a scan. Trying OCR on every PDF would
+# multiply a 50 GB index's runtime for nothing, so it is attempted only
+# when the text layer comes back empty.
+def load_pdf(path):
+    documents = PyPDFLoader(path).load()
+    if any(d.page_content.strip() for d in documents):
+        return documents
+    if not ocr_available():
+        return documents
+    return _ocr_pdf(path)
+
+
+def _ocr_pdf(path):
+    import pytesseract
+    from pdf2image import convert_from_path
+
+    pages = convert_from_path(path, dpi=OCR_DPI, last_page=OCR_MAX_PAGES)
+    documents = []
+    for number, page in enumerate(pages, start=1):
+        text = pytesseract.image_to_string(page, lang=OCR_LANGS).strip()
+        if text:
+            documents.append(Document(
+                page_content=text,
+                metadata={"source": path, "page": number, "extraction": "ocr"},
+            ))
+    return documents
+
+
+IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".gif"})
+
+
 # Load a single file's contents, using the loader for its extension
 def load_file(path):
     ext = os.path.splitext(path)[1].lower()
     if ext == ".pdf":
-        loader = PyPDFLoader(path)
-    elif ext == ".docx":
+        return load_pdf(path)
+    if ext == ".docx":
         return load_docx(path)
-    else:
-        loader = TextLoader(path, autodetect_encoding=True)
-    return loader.load()
+    if ext == ".xlsx":
+        return load_xlsx(path)
+    if ext == ".pptx":
+        return load_pptx(path)
+    if ext == ".eml":
+        return load_eml(path)
+    if ext in IMAGE_EXTENSIONS:
+        if not ocr_available():
+            return []
+        return load_image_ocr(path)
+    return TextLoader(path, autodetect_encoding=True).load()
 
 
 # Streamed rather than read whole: the corpus is a 50 GB network share and
@@ -379,7 +576,14 @@ def sync_vectorstore(store, paths=None):
 
     added_chunks = 0
     for path in changed_or_new:
-        documents = load_file(path)
+        try:
+            documents = load_file(path)
+        except Exception as e:  # noqa: BLE001 - one bad file must not end the run
+            ext = os.path.splitext(path)[1].lower()
+            log_event({"event": "loader_error", "source": path,
+                       "guardrail": f"loader_error:{ext}", "error": str(e)})
+            current_stamps.pop(path, None)  # retry it on the next run
+            continue
         chunks = split_documents(documents)
         groups = groups_for_path(path, folder_map, default_groups)
         for chunk in chunks:

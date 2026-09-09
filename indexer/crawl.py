@@ -42,9 +42,12 @@ DEFAULT_EXCLUDE_FILES = (
 # else is still censused - a file that only layer 1 can find is far better
 # than a file nobody can find - but is marked indexable=0 so the content
 # sync does not try to load it.
+# Kept in step with rag.LOADABLE_EXTENSIONS: a file marked indexable here
+# that load_file() cannot read would be retried, and logged as a loader
+# error, on every nightly run.
 INDEXABLE_EXTENSIONS = frozenset({
-    ".pdf", ".txt", ".md", ".docx", ".xlsx", ".pptx", ".eml", ".msg",
-    ".csv", ".rtf", ".odt", ".html", ".htm",
+    ".pdf", ".txt", ".md", ".docx", ".xlsx", ".pptx", ".eml", ".csv",
+    ".png", ".jpg", ".jpeg", ".tif", ".tiff",
 })
 
 SCHEMA = """
