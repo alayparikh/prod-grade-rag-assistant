@@ -18,3 +18,6 @@ venv/
 # container runtime data
 /data/
 canonical_sources.yaml
+
+# local-only architecture reference
+ARCHITECTURE.md
