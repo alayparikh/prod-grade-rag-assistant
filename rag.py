@@ -42,7 +42,13 @@ DOCS_PATH = os.environ.get("RAG_DOCS_PATH", "./docs")
 PERSIST_PATH = os.environ.get("RAG_PERSIST_PATH", "./chroma_db")
 MANIFEST_PATH = os.path.join(PERSIST_PATH, "manifest.json")
 PERMISSIONS_PATH = os.environ.get("RAG_PERMISSIONS_PATH", "./permissions.yaml")
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+# Overridable because the right model depends on the corpus, which is not
+# known until the census runs: bge-small is a straight upgrade on
+# MiniLM for English, and bge-m3 is the one to use if the share turns out
+# to hold Hindi or Gujarati documents. Changing this invalidates every
+# stored embedding, so it requires a full reindex.
+EMBEDDING_MODEL = os.environ.get(
+    "RAG_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
 MODEL = "claude-sonnet-5"
 HISTORY_TURNS = 10  # remember last 10 exchanges
 SUPERUSER_GROUP = "ALL"  # bypasses document filtering entirely

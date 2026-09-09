@@ -42,6 +42,27 @@ def run_crawl(root, connection, verbose=True):
     return stats
 
 
+# Off by default and never implied by another flag: this is the only part
+# of indexing that sends document text off the network, and it does so
+# under the indexer's account rather than any one user's.
+def run_summaries(connection, verbose=True):
+    from langchain_anthropic import ChatAnthropic
+
+    from indexer import summarize
+
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        print("Skipping summaries: ANTHROPIC_API_KEY is not set.", file=sys.stderr)
+        return None
+
+    llm = ChatAnthropic(model=summarize.SUMMARY_MODEL, max_tokens=200)
+    stats = summarize.summarize_folders(connection, llm)
+    rag.log_event({"event": "summaries", **stats})
+    if verbose:
+        print(f"Summaries: {stats['written']} written, {stats['skipped']} unchanged, "
+              f"{stats['failed']} failed, {stats['removed']} removed.")
+    return stats
+
+
 def main(argv=None):
     load_dotenv()
 
@@ -52,6 +73,11 @@ def main(argv=None):
                         help="crawl and report file counts only; no embedding")
     parser.add_argument("--reindex", action="store_true",
                         help="delete and rebuild the vector store")
+    parser.add_argument("--summaries", action="store_true",
+                        help="also generate one-line folder summaries (calls "
+                             "the Claude API and sends short excerpts of "
+                             "documents, including from folders individual "
+                             "users cannot read)")
     args = parser.parse_args(argv)
 
     if not os.path.isdir(args.root):
@@ -70,6 +96,9 @@ def main(argv=None):
                        "total_bytes": report["total_bytes"],
                        "indexable_files": report["indexable_files"],
                        "indexable_bytes": report["indexable_bytes"]})
+
+        if args.summaries:
+            run_summaries(connection)
 
         if args.census:
             return 0
