@@ -186,6 +186,26 @@ document exists.
 | `RAG_META_DB` | File catalogue (default `<persist>/meta.sqlite`) |
 | `RAG_EXCLUDE_GLOBS` | Extra directory/file globs to skip while crawling |
 
+### Deploying
+
+```bash
+docker compose up -d --build
+```
+
+`app` serves the UI, `indexer` re-indexes nightly, and `caddy` terminates
+TLS. Both Python services mount the share read-only, so a bug here cannot
+write to the NAS even if the service account is later over-granted. The
+index lives in a named volume — back that up and test a restore, because
+rebuilding it from 50 GB is hours of OCR and embedding.
+
+**Not yet exercised on real hardware.** The container files, the ACL
+tagging in `indexer/acl.py`, and the LDAP group lookup are written and
+unit-tested but have never run against an actual NAS. Confirm on site
+that the device answers a security-descriptor query and that group
+membership resolves before turning `RAG_ACL_TAGGING` on. Until then the
+query-time check stands alone, which is correct but slower for users with
+narrow access.
+
 ### Two search modes
 
 **Ask about content** is the RAG path. **Find a file** matches names and

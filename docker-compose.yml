@@ -1,0 +1,49 @@
+# Three services: the web app, the nightly indexer, and TLS termination.
+#
+# The NAS mount is bound read-only into both Python services. That is
+# belt-and-braces - the service account is already read-only on the NAS -
+# but it means a bug in this code cannot write to the share even if that
+# account is later over-granted.
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      RAG_AUTH_MODE: nas
+    volumes:
+      - /mnt/nas:/mnt/nas:ro
+      - index:/data
+    expose: ["8501"]
+
+  # Indexes once at start, then nightly. A plain sleep loop rather than a
+  # cron daemon: one process, one log stream, and no second scheduler to
+  # keep in step with the container's lifecycle.
+  indexer:
+    build: .
+    restart: unless-stopped
+    env_file: [.env]
+    volumes:
+      - /mnt/nas:/mnt/nas:ro
+      - index:/data
+    command: >
+      sh -c 'while true; do
+        python -m indexer || echo "indexer run failed";
+        sleep $$(( $$(date -d "tomorrow 02:00" +%s) - $$(date +%s) ));
+      done'
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["443:443", "80:80"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [app]
+
+volumes:
+  index:
+  caddy_data:
+  caddy_config:

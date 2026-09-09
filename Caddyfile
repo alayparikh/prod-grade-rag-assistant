@@ -1,0 +1,23 @@
+# Replace with the internal hostname IT creates. Caddy obtains a
+# certificate automatically for a publicly-resolvable name; for an
+# internal-only name, point it at the certificate your internal CA issues:
+#
+#   tls /etc/caddy/cert.pem /etc/caddy/key.pem
+
+search.company.local {
+	# Streamlit talks over a websocket; without this the page loads and
+	# then never updates.
+	@websocket {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+	reverse_proxy @websocket app:8501
+	reverse_proxy app:8501
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+	}
+}

@@ -14,3 +14,6 @@ __pycache__/
 users.yaml
 eval/golden_set.yaml
 venv/
+
+# container runtime data
+/data/
