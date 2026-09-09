@@ -141,7 +141,10 @@ class TestBuildRetrieverUsesComputedK:
 
         class _FakeVS:
             def get(self, **kwargs):
+                # Chroma always returns ids; a corpus-size probe asks for
+                # nothing else, so they are the only field it can count.
                 return {
+                    "ids": [f"id{i}" for i in range(n)],
                     "documents": [f"chunk {i}" for i in range(n)],
                     "metadatas": [{"source": "f.txt"} for _ in range(n)],
                 }

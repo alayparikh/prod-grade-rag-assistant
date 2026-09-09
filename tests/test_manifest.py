@@ -80,6 +80,27 @@ class TestFileStamp:
         assert was_read is True
 
 
+class TestPathNormalisation:
+    def test_indexer_and_app_agree_on_path_form(self, tmp_path, monkeypatch):
+        # Regression: the crawler produced absolute paths and
+        # discover_files() produced "./docs/x" ones, so syncing from the app
+        # after a cron index saw every file as both removed and new - a full
+        # re-embed of the corpus on every app start.
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        (docs / "a.txt").write_text("content")
+        monkeypatch.setattr(rag, "DOCS_PATH", str(docs))
+
+        from_walk = rag.discover_files()
+        from_crawler = [str(docs / "a.txt")]
+        assert from_walk == from_crawler
+
+    def test_relative_input_is_normalised(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "x.txt").write_text("c")
+        assert rag._normalize_path("./x.txt") == str(tmp_path / "x.txt")
+
+
 class TestLegacyManifest:
     def test_old_path_to_hash_format_still_loads(self, tmp_path, monkeypatch):
         import json

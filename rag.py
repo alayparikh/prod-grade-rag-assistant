@@ -34,6 +34,8 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field
 
+from search import keyword
+
 # Overridable via env so tests/CI can point at a fixture corpus and a
 # throwaway index without touching the real ones.
 DOCS_PATH = os.environ.get("RAG_DOCS_PATH", "./docs")
@@ -205,21 +207,30 @@ def load_permissions():
     return config.get("folders", {}), config.get("default_groups", ["Everyone"])
 
 
+# Every indexed path is stored absolute. The crawler produces absolute
+# paths (it walks an absolute root) while discover_files() produced
+# "./docs/x" ones, so a corpus indexed by `python -m indexer` and then
+# synced from the app looked entirely removed and entirely new: a full
+# re-embed of the share on every app start.
 def _normalize_path(path):
-    return path[2:] if path.startswith("./") else path
+    return os.path.abspath(path)
 
 
 # Which groups can see this file - the longest matching folder prefix wins,
 # falling back to default_groups for anything not under a listed folder.
 def groups_for_path(path, folder_map, default_groups):
     normalized = _normalize_path(path)
-    best_match = None
-    for folder in folder_map:
-        folder_norm = _normalize_path(folder).rstrip("/")
-        if normalized == folder_norm or normalized.startswith(folder_norm + "/"):
-            if best_match is None or len(folder_norm) > len(best_match):
-                best_match = folder_norm
-    return folder_map[best_match] if best_match is not None else default_groups
+    best_key = None
+    best_length = -1
+    for folder, groups in folder_map.items():
+        # Both sides are normalized before comparing, but the *original*
+        # key is what indexes back into the map - normalizing the key and
+        # then looking it up raises KeyError.
+        folder_norm = _normalize_path(folder).rstrip(os.sep)
+        if normalized == folder_norm or normalized.startswith(folder_norm + os.sep):
+            if len(folder_norm) > best_length:
+                best_key, best_length = folder, len(folder_norm)
+    return folder_map[best_key] if best_key is not None else default_groups
 
 
 # Build the Chroma metadata filter for a user's groups. None means no
@@ -257,7 +268,7 @@ def discover_files():
                 continue
             ext = os.path.splitext(file)[1].lower()
             if ext in LOADABLE_EXTENSIONS:
-                paths.append(os.path.join(root, file))
+                paths.append(_normalize_path(os.path.join(root, file)))
 
     return sorted(paths)
 
@@ -537,11 +548,26 @@ def get_embeddings():
     return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
 
 
+# The keyword index lives beside the vector store and is written in the
+# same pass. It is optional so that a caller passing a stub vector store
+# (tests, notebooks) does not need one; retrieval then falls back to the
+# in-memory BM25 path.
+def _keyword_index():
+    try:
+        # PERSIST_PATH, not the env var, so the keyword index follows the
+        # vector store even when a caller has overridden it in-process.
+        return keyword.connect(persist_path=PERSIST_PATH)
+    except Exception as e:  # noqa: BLE001 - a missing keyword index is degraded, not fatal
+        log_event({"event": "keyword_index_unavailable", "error": str(e)})
+        return None
+
+
 # Re-embed only files that are new or whose content changed since the last
 # run, and drop chunks for files that were removed. Unchanged files are
 # never re-read or re-embedded.
 def sync_vectorstore(store, paths=None):
-    current_files = discover_files() if paths is None else sorted(paths)
+    current_files = (discover_files() if paths is None
+                     else sorted(_normalize_path(p) for p in paths))
 
     manifest = load_manifest()
     current_stamps = {}
@@ -569,8 +595,12 @@ def sync_vectorstore(store, paths=None):
         save_manifest(current_stamps)  # refresh mtimes so the next run reads none
         return
 
+    keyword_index = _keyword_index()
+
     for path in removed + changed_or_new:
         store.delete(where={"source": path})
+        if keyword_index is not None:
+            keyword.delete_source(keyword_index, path)
 
     folder_map, default_groups = load_permissions()
 
@@ -590,7 +620,17 @@ def sync_vectorstore(store, paths=None):
             for group in groups:
                 chunk.metadata[f"group_{group}"] = True
         if chunks:
-            store.add_documents(chunks)
+            ids = store.add_documents(chunks)
+            if keyword_index is not None:
+                if ids:
+                    keyword.add_chunks(keyword_index, chunks, ids)
+                else:
+                    # Without ids the keyword rows could not be deleted when
+                    # the file changes, so they are not written at all: a
+                    # missing keyword row degrades recall, a stale one
+                    # serves deleted content.
+                    log_event({"event": "keyword_index_skipped", "source": path,
+                               "reason": "vector store returned no ids"})
         added_chunks += len(chunks)
 
     save_manifest(current_stamps)
@@ -658,30 +698,50 @@ def _corpus_size(vectorstore, allowed_groups=None):
 # "linkedin"/"github") that vector search keeps losing.
 def build_retriever(vectorstore, allowed_groups=None, over_fetch=1):
     where_filter = build_group_filter(allowed_groups)
+    keyword_index = _keyword_index()
+    use_keyword_index = keyword_index is not None and keyword.count(keyword_index) > 0
 
-    get_kwargs = {"include": ["documents", "metadatas"]}
-    if where_filter:
-        get_kwargs["where"] = where_filter
-    raw = vectorstore.get(**get_kwargs)
-    all_chunks = [
-        Document(page_content=doc, metadata=meta)
-        for doc, meta in zip(raw["documents"], raw["metadatas"])
-    ]
+    # Corpus size only. Fetching documents and metadata here was what made
+    # building a retriever cost a full corpus load; with the keyword index
+    # on disk, nothing needs the chunk text in memory.
+    if use_keyword_index:
+        corpus_size = _corpus_size(vectorstore, allowed_groups)
+        all_chunks = None
+    else:
+        get_kwargs = {"include": ["documents", "metadatas"]}
+        if where_filter:
+            get_kwargs["where"] = where_filter
+        raw = vectorstore.get(**get_kwargs)
+        all_chunks = [
+            Document(page_content=doc, metadata=meta)
+            for doc, meta in zip(raw["documents"], raw["metadatas"])
+        ]
+        corpus_size = len(all_chunks)
 
-    k = compute_k(len(all_chunks)) * max(1, int(over_fetch))
+    k = compute_k(corpus_size) * max(1, int(over_fetch))
 
     search_kwargs = {"k": k}
     if where_filter:
         search_kwargs["filter"] = where_filter
     vector_retriever = vectorstore.as_retriever(search_kwargs=search_kwargs)
 
-    if not all_chunks:
+    if corpus_size == 0:
         return vector_retriever  # same filter applied, so this also yields nothing
 
-    bm25_retriever = BM25Retriever.from_documents(all_chunks, preprocess_func=_tokenize)
-    bm25_retriever.k = k
+    if use_keyword_index:
+        # SUPERUSER_GROUP is expressed as "no filter", matching
+        # build_group_filter(), so the two stores agree on who sees what.
+        groups = None if where_filter is None else list(allowed_groups)
+        keyword_retriever = keyword.FtsRetriever(
+            connection=keyword_index, k=k, allowed_groups=groups,
+        )
+    else:
+        keyword_retriever = BM25Retriever.from_documents(
+            all_chunks, preprocess_func=_tokenize)
+        keyword_retriever.k = k
 
-    return EnsembleRetriever(retrievers=[vector_retriever, bm25_retriever], weights=[0.5, 0.5])
+    return EnsembleRetriever(retrievers=[vector_retriever, keyword_retriever],
+                             weights=[0.5, 0.5])
 
 
 class AnswerWithSources(BaseModel):

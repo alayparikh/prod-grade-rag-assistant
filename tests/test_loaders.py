@@ -219,7 +219,10 @@ class TestLoaderErrorsAreSurvivable:
                 pass
 
             def add_documents(self, chunks):
+                # Chroma returns the ids it assigned; the keyword index
+                # needs them to delete the right rows on the next change.
                 added.extend(chunks)
+                return [f"id-{len(added) - len(chunks) + i}" for i in range(len(chunks))]
 
         try:
             rag.sync_vectorstore(_FakeStore())
