@@ -56,6 +56,7 @@ jobs:
         env:
           RAG_DOCS_PATH: ./eval/fixtures/docs
           RAG_PERSIST_PATH: ${{ runner.temp }}/ci_index
+          RAG_META_DB: ${{ runner.temp }}/ci_index/meta.sqlite
           RAG_LOG_PATH: ${{ runner.temp }}/ci_logs/events.jsonl
         run: python eval/run_eval.py --golden-set eval/fixtures/golden_set.yaml
 
@@ -87,5 +88,6 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           RAG_DOCS_PATH: ./eval/fixtures/docs
           RAG_PERSIST_PATH: ${{ runner.temp }}/ci_index
+          RAG_META_DB: ${{ runner.temp }}/ci_index/meta.sqlite
           RAG_LOG_PATH: ${{ runner.temp }}/ci_logs/events.jsonl
         run: python eval/run_eval.py --live --golden-set eval/fixtures/golden_set.yaml

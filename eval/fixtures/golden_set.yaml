@@ -88,3 +88,25 @@
   category: aggregate
   question: "List all the current engineers."
   expect_answer_contains_all: ["Alex Chen", "Jane Doe", "Priya Nair", "Sam Rivera", "Tom Becker"]
+
+# File-search cases. These exercise layer 1 (the SQLite catalogue), which
+# needs neither embeddings nor an API key, so they run in the free pass.
+# The point of the mode is files whose contents are never indexed, where
+# the name is the only thing to match on.
+- id: find-file-by-topic
+  mode: find_file
+  category: find-file
+  question: "where is the networking runbook"
+  expect_file_any: ["runbook_networking"]
+
+- id: find-file-by-person
+  mode: find_file
+  category: find-file
+  question: "find Jane Doe's resume"
+  expect_file_any: ["jane_doe_resume"]
+
+- id: find-file-distinctive-word
+  mode: find_file
+  category: find-file
+  question: "the onboarding guide"
+  expect_file_any: ["onboarding_guide"]

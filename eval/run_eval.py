@@ -80,10 +80,37 @@ def check_expectations(item, answer_text):
     return True, ""
 
 
+# File-search cases need no embeddings and no API key: the catalogue is
+# built by the crawler and queried by keyword, so they are checked in the
+# free pass alongside retrieval.
+def run_find_file(item):
+    from indexer import crawl
+    from search import metadata
+
+    connection = crawl.connect()
+    try:
+        if crawl.census(connection)["total_files"] == 0:
+            return "SKIP", "no file catalogue; run `python -m indexer`"
+        query = metadata.parse_question(item["question"])
+        results = metadata.search_files(connection, query)
+    finally:
+        connection.close()
+
+    found = [os.path.basename(r["path"]) for r in results]
+    expected = item.get("expect_file_any", [])
+    if any(any(e.lower() in name.lower() for name in found) for e in expected):
+        return "PASS", ""
+    return "FAIL", f"expected one of {expected}, found {found[:5]}"
+
+
 def run_retrieval_only(items, vectorstore):
     retriever = rag.build_retriever(vectorstore)
     results = []
     for item in items:
+        if item.get("mode") == "find_file":
+            status, reason = run_find_file(item)
+            results.append((item["id"], status, reason))
+            continue
         if item.get("category") in ("multi-turn", "safety") or item.get("expect_refusal"):
             results.append((item["id"], "SKIP", "needs --live"))
             continue
@@ -106,6 +133,10 @@ def run_live(items, vectorstore):
     chain = rag.build_chain(vectorstore)
     results = []
     for item in items:
+        if item.get("mode") == "find_file":
+            status, reason = run_find_file(item)
+            results.append((item["id"], status, reason))
+            continue
         if "turns" in item:
             history = []
             for i, turn in enumerate(item["turns"]):
