@@ -60,6 +60,19 @@ LOG_MAX_BYTES = int(os.environ.get("RAG_LOG_MAX_BYTES", 10 * 1024 * 1024))
 LOG_BACKUP_COUNT = 5  # with LOG_MAX_BYTES, caps the log directory at ~50MB
 NO_CONTEXT_ANSWER = "I don't have information on that in the indexed documents."
 
+# When a per-file access check is in play, retrieval over-fetches by this
+# factor so that dropping the files this user cannot open still leaves
+# enough context to answer from. The check is authoritative and runs on
+# every question; the index-time group tags are only a pre-filter, and on
+# a NAS whose group membership cannot be resolved there is no pre-filter
+# at all, so over-fetching is what keeps recall usable for those users.
+OVER_FETCH_MULTIPLIER = int(os.environ.get("RAG_OVER_FETCH", 3))
+
+# Deliberately identical to NO_CONTEXT_ANSWER: a user must not be able to
+# tell "this does not exist" apart from "this exists but is not yours".
+# The distinction is recorded in the event log for admins, never shown.
+NO_ACCESS_ANSWER = NO_CONTEXT_ANSWER
+
 # USD per 1M tokens, (input, output). A model missing here logs its token
 # counts with cost_usd=None rather than being priced with a guessed rate.
 PRICING = {
@@ -105,7 +118,17 @@ def _get_event_logger():
     logger.setLevel(logging.INFO)
     logger.propagate = False  # keep events out of the root/console logger
 
-    if not logger.handlers:
+    # Look for *our* file handler specifically, not just any handler. A bare
+    # "if not logger.handlers" check silently skips setup whenever the host
+    # has attached its own handler to this logger (pytest's capture plugin
+    # and several app servers do), and event logging then writes nowhere.
+    target = os.path.abspath(LOG_PATH)
+    already_attached = any(
+        isinstance(h, logging.handlers.RotatingFileHandler)
+        and os.path.abspath(getattr(h, "baseFilename", "")) == target
+        for h in logger.handlers
+    )
+    if not already_attached:
         handler = logging.handlers.RotatingFileHandler(
             LOG_PATH, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUP_COUNT,
         )
@@ -354,12 +377,23 @@ def compute_k(corpus_size):
     return max(RETRIEVAL_K_MIN, min(RETRIEVAL_K_MAX, scaled))
 
 
+# Chunk count visible under a group filter, used to size retrieval. Kept
+# separate from build_retriever so build_chain can compute the unfiltered
+# context ceiling without building a second retriever.
+def _corpus_size(vectorstore, allowed_groups=None):
+    where_filter = build_group_filter(allowed_groups)
+    get_kwargs = {"include": []}
+    if where_filter:
+        get_kwargs["where"] = where_filter
+    return len(vectorstore.get(**get_kwargs).get("ids", []))
+
+
 # Combine vector similarity search with BM25 keyword search, both scoped to
 # the given groups (None = unrestricted). Vector search alone misses short,
 # dense chunks (headers, contact lines, links) that get outscored by
 # longer, unrelated chunks; BM25 catches literal terms (names, emails,
 # "linkedin"/"github") that vector search keeps losing.
-def build_retriever(vectorstore, allowed_groups=None):
+def build_retriever(vectorstore, allowed_groups=None, over_fetch=1):
     where_filter = build_group_filter(allowed_groups)
 
     get_kwargs = {"include": ["documents", "metadatas"]}
@@ -371,7 +405,7 @@ def build_retriever(vectorstore, allowed_groups=None):
         for doc, meta in zip(raw["documents"], raw["metadatas"])
     ]
 
-    k = compute_k(len(all_chunks))
+    k = compute_k(len(all_chunks)) * max(1, int(over_fetch))
 
     search_kwargs = {"k": k}
     if where_filter:
@@ -428,21 +462,33 @@ class RagChain:
     bundled create_retrieval_chain) so answer_question() can inspect
     retrieved context and skip the LLM call entirely when it's empty."""
 
-    def __init__(self, history_aware_retriever, answer_chain):
+    def __init__(self, history_aware_retriever, answer_chain, max_context=None):
         self.history_aware_retriever = history_aware_retriever
         self.answer_chain = answer_chain
+        # Cap on chunks passed to the model after access filtering. Set when
+        # retrieval over-fetches for the ACL check, so an over-fetch of 3x
+        # does not silently triple prompt size (and cost) for users who can
+        # in fact read everything.
+        self.max_context = max_context
 
 
 # Build the chat chain: rewrite the question using history, then answer from context.
 # allowed_groups scopes retrieval to what that user is permitted to see;
 # None means unrestricted (CLI/local admin use).
-def build_chain(vectorstore, allowed_groups=None):
+def build_chain(vectorstore, allowed_groups=None, over_fetch=1):
     llm = ChatAnthropic(
         model=MODEL,
         max_tokens=16000,
     )
 
-    retriever = build_retriever(vectorstore, allowed_groups)
+    over_fetch = max(1, int(over_fetch))
+    retriever = build_retriever(vectorstore, allowed_groups, over_fetch=over_fetch)
+    # The ensemble merges two retrievers of k each, so an unfiltered chain
+    # can legitimately surface up to 2k distinct chunks. Keep that ceiling
+    # and strip only the extra breadth the over-fetch added.
+    max_context = None
+    if over_fetch > 1:
+        max_context = 2 * compute_k(_corpus_size(vectorstore, allowed_groups))
 
     contextualize_prompt = ChatPromptTemplate.from_messages([
         ("system",
@@ -482,7 +528,7 @@ def build_chain(vectorstore, allowed_groups=None):
     structured_llm = llm.with_structured_output(AnswerWithSources)
     answer_chain = AnswerChain(structured_llm, answer_prompt)
 
-    return RagChain(history_aware_retriever, answer_chain)
+    return RagChain(history_aware_retriever, answer_chain, max_context=max_context)
 
 
 # Runs the full guardrail pipeline around one question: length cap, retrieval,
@@ -491,9 +537,11 @@ def build_chain(vectorstore, allowed_groups=None):
 # handling on the actual Claude call, secret redaction on the output, and
 # structured logging of every request. This is the single call site both
 # the CLI loop and the web UI use, so every guardrail applies in both.
-def answer_question(rag_chain, question, chat_history, log_context=None):
+def answer_question(rag_chain, question, chat_history, log_context=None,
+                    access_check=None):
     start = time.time()
     log_context = log_context or {}
+    acl_stats = {"num_retrieved": 0, "num_dropped_by_acl": 0}
 
     def finish(answer, context, guardrail, sources_used=(), usage=None):
         # No usage means no LLM call happened (a guardrail short-circuit),
@@ -511,6 +559,11 @@ def answer_question(rag_chain, question, chat_history, log_context=None):
             "sources_retrieved": sorted({d.metadata.get("source", "?") for d in context}),
             "sources_used": sorted(sources_used),
             "guardrail": guardrail,
+            # num_sources is what the model saw; num_retrieved is what
+            # retrieval produced before the per-file NAS access check.
+            # A persistent gap between them means the index is tagged
+            # more loosely than the NAS actually permits.
+            **acl_stats,
             "latency_ms": round((time.time() - start) * 1000),
             **usage,
             **log_context,
@@ -532,7 +585,7 @@ def answer_question(rag_chain, question, chat_history, log_context=None):
     # just the answer call.
     with get_usage_metadata_callback() as usage_cb:
         answer, context, guardrail, sources_used = _generate(
-            rag_chain, question, chat_history
+            rag_chain, question, chat_history, access_check, acl_stats
         )
 
     return finish(answer, context, guardrail, sources_used,
@@ -542,7 +595,7 @@ def answer_question(rag_chain, question, chat_history, log_context=None):
 # Retrieval + generation with typed error handling. Both steps call the LLM
 # (query rewriting, then answer generation), so a rate-limit/auth/timeout
 # failure can happen during either one.
-def _generate(rag_chain, question, chat_history):
+def _generate(rag_chain, question, chat_history, access_check=None, acl_stats=None):
     try:
         context = rag_chain.history_aware_retriever.invoke({
             "input": question, "chat_history": chat_history,
@@ -554,6 +607,18 @@ def _generate(rag_chain, question, chat_history):
 
     if not context:
         return NO_CONTEXT_ANSWER, [], "no_context", []
+
+    # Authoritative authorization, between retrieval and the LLM call. The
+    # index's group tags are a stale snapshot; this asks the NAS itself,
+    # as this user, right now. It must run before any chunk text reaches
+    # Claude, so it lives here rather than in the UI layer.
+    if access_check is not None:
+        context = _filter_by_access(context, access_check, acl_stats)
+        if not context:
+            return NO_ACCESS_ANSWER, [], "acl_empty", []
+        max_context = getattr(rag_chain, "max_context", None)
+        if max_context:
+            context = context[:max_context]
 
     try:
         result = rag_chain.answer_chain.invoke({
@@ -572,6 +637,28 @@ def _generate(rag_chain, question, chat_history):
 
     answer, was_redacted = redact_secrets(result.answer)
     return answer, context, "secret_redacted" if was_redacted else None, sources_used
+
+
+# Drop retrieved chunks whose source file this user cannot open on the NAS.
+# Fails closed in every direction: a check that raises, a chunk with no
+# source path, and a chunk whose source is denied are all removed.
+def _filter_by_access(context, access_check, acl_stats=None):
+    allowed = []
+    for doc in context:
+        source = doc.metadata.get("source")
+        if not source:
+            continue
+        try:
+            permitted = access_check(source)
+        except Exception:  # noqa: BLE001 - an unavailable NAS must not open access
+            permitted = False
+        if permitted:
+            allowed.append(doc)
+
+    if acl_stats is not None:
+        acl_stats["num_retrieved"] = len(context)
+        acl_stats["num_dropped_by_acl"] = len(context) - len(allowed)
+    return allowed
 
 
 def _api_error_message(e):
