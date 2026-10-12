@@ -35,11 +35,14 @@ class Bm25 {
     for (const d of this.docs) for (const t of d.tf.keys()) this.df.set(t, (this.df.get(t) || 0) + 1);
   }
 
-  search(question, k) {
+  // `allowed` filters candidates, not statistics: IDF stays corpus-wide, as
+  // it does in FTS5 when the Python index filters by group.
+  search(question, k, allowed) {
     const terms = queryTerms(question);
     const n = this.docs.length;
     const scored = [];
     for (const d of this.docs) {
+      if (allowed && !allowed(d.id)) continue;
       let score = 0;
       for (const t of terms) {
         const f = d.tf.get(t);
@@ -108,16 +111,21 @@ export class Engine {
     return Array.from(logits.data);
   }
 
-  async search(question) {
+  // `allow` is the set of source files the searcher may open. It is applied
+  // before retrieval, as the Python app's group filter is, so a file outside
+  // it can never be ranked, scored or quoted.
+  async search(question, { allow } = {}) {
     const cfg = this.config;
     const t = performance.now();
     const timings = {};
+    const allowed = allow ? (id) => allow.has(this.chunks[id].source) : null;
 
     const q = await this.embed(question);
     const vector = this.chunks
+      .filter((c) => !allowed || allowed(c.id))
       .map((c) => ({ id: c.id, sim: c.embedding.reduce((s, x, i) => s + x * q[i], 0) }))
       .sort((a, b) => b.sim - a.sim).slice(0, cfg.k).map((s) => s.id);
-    const keyword = this.bm25.search(question, cfg.k);
+    const keyword = this.bm25.search(question, cfg.k, allowed);
     timings.retrieve = performance.now() - t;
 
     const fused = fuse([vector, keyword], cfg.weights, cfg.rrf_c);

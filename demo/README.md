@@ -59,6 +59,15 @@ npm install --prefix demo/.node @huggingface/transformers@3.7.1
 node demo/check_search.mjs
 ```
 
+## The interactive parts (`app.js`)
+
+| Part | What it proves | How it works |
+|---|---|---|
+| **Where company search breaks** | Four real failure modes, run live | Each card runs a preset question. The "What just happened" text is computed from that run's actual rankings, never written in advance |
+| **Search as** (Admin / Engineer / HR / Contractor) | Permissions are enforced, not just hidden | Each role maps to the files it may open; `search.js` drops everything else *before* retrieval, as the Python app's group filter does. A blocked file gets the same "not covered" message as a missing one, so its existence doesn't leak |
+| **Pipeline X-ray** | Why hybrid search beats either half alone | The four ranked lists side by side; hover a passage to follow it across them |
+| **Requests since the models loaded** | Nothing you type leaves the browser | A `PerformanceObserver` counts every network request after load. Anyone can confirm it in DevTools |
+
 ## What it cannot do
 
 There is no language model, so it quotes passages rather than writing

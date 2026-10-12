@@ -9,6 +9,8 @@ const COLORS = {
   aluminum: 0xdce0e5,
   slip: 0xf7f8fa,
   cobalt: 0x2e4bff,
+  violet: 0x7a3cff,  // meaning-search lane, as in the X-ray
+  teal: 0x0f9d8a,    // exact-word lane
   steel: 0x7d8794,
 };
 
@@ -116,6 +118,8 @@ export async function mountScene(canvas, { reducedMotion }) {
   }
 
   const white = new THREE.Color(COLORS.slip), cobalt = new THREE.Color(COLORS.cobalt);
+  const violet = new THREE.Color(COLORS.violet), teal = new THREE.Color(COLORS.teal);
+  const clamp01 = (x) => Math.max(0, Math.min(1, x));
   const tmp = new THREE.Object3D(), qa = new THREE.Quaternion(), qb = new THREE.Quaternion(), col = new THREE.Color();
   const phase = Float32Array.from({ length: count }, () => rand(0, Math.PI * 2));
 
@@ -134,8 +138,13 @@ export async function mountScene(canvas, { reducedMotion }) {
       tmp.scale.setScalar(a[i].scale + (b[i].scale - a[i].scale) * t);
       tmp.updateMatrix();
       mesh.setMatrixAt(i, tmp.matrix);
-      const top = role[i] >= 0 && role[i] < TOP;
-      col.copy(white).lerp(cobalt, top ? Math.max(0, progress - 2) : 0);
+      // Lanes take their search's colour in step 2, then everything but the
+      // top three fades back to paper as the column forms.
+      const k = role[i];
+      const laneWeight = clamp01(progress - 1.2) * (1 - clamp01(progress - 2));
+      col.copy(white);
+      if (k >= 0 && k < LANE * 2) col.lerp(k < LANE ? violet : teal, laneWeight);
+      if (k >= 0 && k < TOP) col.lerp(cobalt, clamp01(progress - 2));
       mesh.setColorAt(i, col);
     }
     mesh.instanceMatrix.needsUpdate = true;
