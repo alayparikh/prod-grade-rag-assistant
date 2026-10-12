@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       run_live_eval:
-        description: "Also run the --live eval (real Claude API calls, costs money)"
+        description: "Also run the --live eval)"
         type: boolean
         default: false
 

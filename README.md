@@ -2,6 +2,19 @@
 
 Chat with your own PDFs/Word/text files. Embeddings run locally (free); only answer generation calls Claude.
 
+**[▶ Try the live demo](https://alayparikh.github.io/prod-grade-rag-assistant/)**: a fictional company's handbook, runbooks and resumes, searched entirely in your browser (no server, no AI calls, no sign-in). How it works: [demo/README.md](demo/README.md).
+
+## Try it locally (no API key needed)
+
+Without `ANTHROPIC_API_KEY` the app runs in offline mode: answers are the best-matching passages, and nothing calls an API.
+
+```bash
+RAG_AUTH_MODE=none RAG_DOCS_PATH=./eval/fixtures/docs RAG_PERSIST_PATH=./demo_index python -m indexer
+RAG_DEMO=1 RAG_AUTH_MODE=none RAG_DOCS_PATH=./eval/fixtures/docs RAG_PERSIST_PATH=./demo_index streamlit run app.py
+```
+
+The hosted demo is a static page built by [`.github/workflows/pages.yml`](.github/workflows/pages.yml); see [demo/README.md](demo/README.md).
+
 ## Setup
 
 ```bash
@@ -45,10 +58,14 @@ docs/ → discover_files() → file_hash() vs manifest.json (skip unchanged)
 ```
 question → answer_question()          ← every guardrail lives here
    ├ length cap                        reject before any API call
-   ├ history-aware retriever           LLM call only if chat history exists
-   │    └ EnsembleRetriever = vector (k) + BM25 keyword (k), k scales with corpus
+   ├ answer cache (per user + index version, first turn only)
+   ├ standalone rewrite                LLM call only if chat history exists
+   │    └ EnsembleRetriever = vector (k) + BM25 keyword (k), RRF-fused, k scales with corpus
    ├ empty context? → short-circuit, never calls Claude
-   ├ structured-output answer → claude-sonnet-5
+   ├ per-file NAS access check
+   ├ cross-encoder rerank → top 10     local, pipeline/rerank.py
+   ├ Haiku relevance grading           nothing relevant → rewrite query, retry once
+   ├ structured-output answer → claude-sonnet-5, streamed
    ├ validate sources_used ⊆ retrieved, redact secrets
    └ log to logs/events.jsonl
 ```
@@ -64,6 +81,7 @@ question → answer_question()          ← every guardrail lives here
 | `indexer/__main__.py` | `python -m indexer` — the cron entrypoint |
 | `search/metadata.py` | Question → file-name search over the catalogue |
 | `auth/smb.py` | NAS login and per-file access checks |
+| `pipeline/` | Query stages: rerank, grading, cache, chunking, tracing, index health |
 | `permissions.yaml` | Folder → group ACL map, pending NAS ACL tagging |
 
 **Adaptive retrieval breadth.** `k` is derived from corpus size (`compute_k()`), not hardcoded — roughly +1 per 100 chunks, clamped to 4–20, overridable with `RAG_RETRIEVAL_K`. A fixed `k=4` was fine at 54 chunks (the top 7% of the corpus) but silently starved recall at 1,038 chunks (top 0.4%): a document listing every employee stopped being retrieved for "how many employees are there", and the assistant correctly refused rather than guessing. Wider retrieval costs more per question — measured ~$0.011 → ~$0.020 — which is the deliberate tradeoff.
@@ -78,6 +96,9 @@ question → answer_question()          ← every guardrail lives here
 | Your documents | `docs/` |
 | `MODEL` | `rag.py` — defaults to `claude-sonnet-5` |
 | `EMBEDDING_MODEL` | `rag.py` — defaults to `all-MiniLM-L6-v2` (small, no GPU) |
+| Rerank, grading, cache, tracing, index health | env vars — see `.env.example` |
+
+Every question's event-log line carries per-step timings (`retrieve_ms`, `rerank_ms`, `grade_ms`, `generate_ms`), `cache` hit/miss and whether the rewrite-retry fired. Changing `pipeline/chunking.py` requires bumping `CHUNKER_VERSION`, which re-embeds every file on the next index run.
 
 ## Guardrails
 

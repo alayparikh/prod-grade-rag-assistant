@@ -20,6 +20,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 import rag  # noqa: E402
 from indexer import crawl  # noqa: E402
+from pipeline import health  # noqa: E402
 
 
 def run_crawl(root, connection, verbose=True):
@@ -103,6 +104,9 @@ def main(argv=None):
         print(f"{args.root} is not a directory. Is the NAS mounted?", file=sys.stderr)
         return 1
 
+    if not args.census:
+        health.write_status(rag.PERSIST_PATH, "running")
+
     connection = crawl.connect()
     try:
         run_crawl(args.root, connection)
@@ -142,6 +146,7 @@ def main(argv=None):
         collection_name="docs",
     )
     rag.sync_vectorstore(store, paths=paths)
+    health.write_status(rag.PERSIST_PATH, "ok", files=len(paths))
     return 0
 
 
@@ -156,6 +161,7 @@ def run_forever(argv, at):
         except Exception as e:  # noqa: BLE001 - a failed night must not end the loop
             print(f"Indexing run failed: {e}", file=sys.stderr)
             rag.log_event({"event": "index_run_failed", "error": str(e)})
+            health.write_status(rag.PERSIST_PATH, "failed", error=str(e)[:500])
 
         delay = seconds_until(at)
         print(f"Next run at {at} (in {delay // 3600}h {(delay % 3600) // 60}m).")

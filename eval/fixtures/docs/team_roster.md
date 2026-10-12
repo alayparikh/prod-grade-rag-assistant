@@ -2,11 +2,11 @@
 
 Current engineers:
 
-- Alex Chen
-- Jane Doe
-- Priya Nair
-- Sam Rivera
-- Tom Becker
+- Alex Chen, Principal Engineer (observability)
+- Jane Doe, Staff Engineer (service networking)
+- Priya Nair, Senior Engineer (data pipelines)
+- Sam Rivera, ML Engineer (search and retrieval)
+- Tom Becker, Staff Engineer (databases and reliability)
 
 Past engineers:
 

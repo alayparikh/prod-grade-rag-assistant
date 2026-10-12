@@ -5,9 +5,15 @@ keywords appear anywhere in the *retrieved chunks* for each question - a
 cheap proxy for "was the right content found at all," and exactly the kind
 of check that would have caught the BM25 tokenizer bug before it shipped.
 
+Retrieval is checked after the reranker's cut (pass --no-rerank to check
+the raw candidate set), since what the model sees is the reranked top N.
+
 Live mode (--live, calls the real Claude API, costs money): builds the
 full chain and checks actual generated answers, including refusal/negative
 and prompt-injection-resistance cases that retrieval alone can't verify.
+Every substantive answer is also scored for groundedness by an LLM judge
+(--no-judge to skip): keyword checks pass an answer that names the right
+thing and then invents the rest.
 
 Usage:
     python eval/run_eval.py                          # retrieval-only
@@ -24,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import rag  # noqa: E402
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
 
 DEFAULT_GOLDEN_SET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden_set.yaml")
 
@@ -103,8 +110,11 @@ def run_find_file(item):
     return "FAIL", f"expected one of {expected}, found {found[:5]}"
 
 
-def run_retrieval_only(items, vectorstore):
+def run_retrieval_only(items, vectorstore, use_rerank=True):
+    from pipeline import rerank
+
     retriever = rag.build_retriever(vectorstore)
+    reranker = rerank.get_reranker() if use_rerank else None
     results = []
     for item in items:
         if item.get("mode") == "find_file":
@@ -115,22 +125,59 @@ def run_retrieval_only(items, vectorstore):
             results.append((item["id"], "SKIP", "needs --live"))
             continue
         docs = retriever.invoke(item["question"])
+        if reranker is not None:
+            docs = reranker.rerank(item["question"], docs)
         text = "\n".join(d.page_content for d in docs)
         ok, reason = check_expectations(item, text)
         results.append((item["id"], "PASS" if ok else "FAIL", reason))
     return results
 
 
-def _grade(result_id, expectations, response):
+class Groundedness(BaseModel):
+    grounded: bool = Field(description="True if every factual claim in the answer "
+                                       "is supported by the context.")
+    unsupported_claims: list[str] = Field(default_factory=list)
+
+
+_JUDGE_PROMPT = (
+    "You check whether an answer is supported by the documents it was "
+    "generated from. A claim is unsupported if the context does not state "
+    "it or directly imply it. Saying the documents lack the information is "
+    "always supported.\n\n<context>\n{context}\n</context>\n\n"
+    "<answer>\n{answer}\n</answer>"
+)
+
+
+def make_judge():
+    from langchain_anthropic import ChatAnthropic
+    from pipeline.grading import GRADER_MODEL
+
+    llm = ChatAnthropic(model=GRADER_MODEL, max_tokens=1024).with_structured_output(Groundedness)
+
+    def judge(answer, context):
+        text = "\n\n".join(f"Source: {d.metadata.get('source', '?')}\n{d.page_content}"
+                            for d in context)
+        return llm.invoke(_JUDGE_PROMPT.format(context=text, answer=answer))
+    return judge
+
+
+def _grade(result_id, expectations, response, judge=None):
     guardrail = response["guardrail"] or ""
     if guardrail.startswith("api_error"):
         return result_id, "ERROR", guardrail
     ok, reason = check_expectations(expectations, response["answer"])
+    if ok and judge is not None and response["context"] \
+            and not looks_like_refusal(response["answer"]):
+        verdict = judge(response["answer"], response["context"])
+        if not verdict.grounded:
+            return result_id, "FAIL", f"ungrounded: {'; '.join(verdict.unsupported_claims)[:200]}"
     return result_id, "PASS" if ok else "FAIL", reason
 
 
-def run_live(items, vectorstore):
-    chain = rag.build_chain(vectorstore)
+def run_live(items, vectorstore, use_judge=True):
+    # No answer cache: a cached answer would hide the regression under test.
+    chain = rag.build_chain(vectorstore, use_cache=False)
+    judge = make_judge() if use_judge else None
     results = []
     for item in items:
         if item.get("mode") == "find_file":
@@ -142,7 +189,7 @@ def run_live(items, vectorstore):
             for i, turn in enumerate(item["turns"]):
                 response = rag.answer_question(chain, turn["question"], history,
                                                  log_context={"mode": "eval"})
-                results.append(_grade(f"{item['id']}#{i}", turn, response))
+                results.append(_grade(f"{item['id']}#{i}", turn, response, judge))
                 history.extend([
                     HumanMessage(content=turn["question"]),
                     AIMessage(content=response["answer"]),
@@ -150,7 +197,7 @@ def run_live(items, vectorstore):
         else:
             response = rag.answer_question(chain, item["question"], [],
                                              log_context={"mode": "eval"})
-            results.append(_grade(item["id"], item, response))
+            results.append(_grade(item["id"], item, response, judge))
     return results
 
 
@@ -176,6 +223,10 @@ def main():
                         help="call the real Claude API and check generated answers "
                              "(costs money) instead of just checking retrieval")
     parser.add_argument("--golden-set", default=DEFAULT_GOLDEN_SET)
+    parser.add_argument("--no-rerank", action="store_true",
+                        help="check the raw retrieval candidates, not the reranked top N")
+    parser.add_argument("--no-judge", action="store_true",
+                        help="skip the LLM groundedness judge in --live mode")
     args = parser.parse_args()
 
     from dotenv import load_dotenv
@@ -194,7 +245,10 @@ def main():
     print(f"Running {'LIVE (real API calls)' if args.live else 'retrieval-only'} "
           f"eval against {args.golden_set}\n")
 
-    results = run_live(items, vectorstore) if args.live else run_retrieval_only(items, vectorstore)
+    if args.live:
+        results = run_live(items, vectorstore, use_judge=not args.no_judge)
+    else:
+        results = run_retrieval_only(items, vectorstore, use_rerank=not args.no_rerank)
     failed = print_report(results)
     return 1 if failed else 0
 

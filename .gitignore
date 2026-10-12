@@ -21,3 +21,11 @@ canonical_sources.yaml
 
 # local-only architecture reference
 ARCHITECTURE.md
+
+# Local dummy-data index (see README: Try it locally)
+demo_index/
+
+# Built by demo/build_index.py and the CI search check
+demo/golden.json
+demo/.node/
+demo/web/index.json

@@ -212,8 +212,8 @@ class TestLoadDocx:
         if not os.path.exists(fixture):
             return  # fixture corpus not present; covered by the eval instead
         text = rag.load_docx(fixture)[0].page_content
-        assert "linkedin.com/in/sam-rivera-example" in text
-        assert "github.com/sam-rivera-example" in text
+        assert "linkedin.example.com/in/sam-rivera" in text
+        assert "github.example.com/sam-rivera" in text
 
 
 class TestSourceValidation:

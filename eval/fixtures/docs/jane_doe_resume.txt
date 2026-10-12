@@ -2,8 +2,8 @@ Jane Doe
 Atlanta, GA | jane.doe@example.com | +1 (555) 010-0100
 
 Professional Summary
-Senior Platform Engineer with 7 years of experience building distributed
-systems, data pipelines, and internal developer tooling.
+Staff platform engineer with 7 years of experience in service networking and
+deployment safety. Known for turning risky migrations into boring ones.
 
 Experience
 
@@ -16,4 +16,4 @@ Backend Engineer | Globex Corp, Remote | Jun 2019 - Feb 2023
 - Owned on-call rotation and incident review for the payments platform.
 
 Skills
-Python, Go, Kubernetes, Terraform, PostgreSQL, Kafka
+Go, Envoy, Kubernetes, Terraform, PostgreSQL

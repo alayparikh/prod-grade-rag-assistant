@@ -1,0 +1,73 @@
+name: Demo site
+
+# Builds the in-browser demo and publishes it to GitHub Pages.
+#
+# One-time setup: repo Settings -> Pages -> Source: GitHub Actions.
+# The site is static. Search runs in the visitor's browser; there is no
+# server and no API key, so there is nothing that can be billed.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time; a newer push supersedes a queued one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Cache HuggingFace model
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ hashFiles('requirements.txt') }}
+
+      # The ingest half of the pipeline, in Python: real loaders, real
+      # chunker, real embedding model, over the synthetic corpus only.
+      - name: Build search index
+        run: python demo/build_index.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Transformers.js for the check
+        run: npm install --prefix demo/.node @huggingface/transformers@3.7.1
+
+      # The query half runs in JavaScript. This runs the golden set through
+      # that code, so a drift from the Python pipeline fails the deploy.
+      - name: Check browser search against the golden set
+        run: node demo/check_search.mjs
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: demo/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

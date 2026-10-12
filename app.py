@@ -8,6 +8,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 import rag
 from auth import smb
 from indexer import crawl
+from pipeline import health
 from rag import HISTORY_TURNS, answer_question, build_chain, get_vectorstore
 from search import metadata
 
@@ -20,11 +21,18 @@ load_dotenv()
 RATE_LIMIT_MAX_REQUESTS = 30
 RATE_LIMIT_WINDOW_SECONDS = 3600
 
+# Local demo mode (RAG_DEMO=1, see README "Try it locally"): synthetic corpus,
+# offline answers, example questions.
+DEMO = os.environ.get("RAG_DEMO") == "1"
+DEMO_QUESTIONS = [
+    "What is the deploy window?",
+    "What is Sam Rivera's LinkedIn?",
+    "Who is on the engineering team?",
+    "What do I do in a SEV1 incident?",
+]
+
 st.set_page_config(page_title="Document Search", page_icon="📄", layout="centered")
 
-if not os.environ.get("ANTHROPIC_API_KEY"):
-    st.error("`ANTHROPIC_API_KEY` is not set. Add it to your `.env` file and restart.")
-    st.stop()
 
 
 # --- authentication -------------------------------------------------------
@@ -112,6 +120,11 @@ def access_checker():
 
 
 st.title("📄 Document Search")
+if DEMO:
+    st.info("**Live demo** over a fictional company's documents (handbook, "
+            "runbooks, resumes, team roster). Offline mode: answers are the "
+            "best-matching passages, found by hybrid search and a local "
+            "reranker - no AI model is called.")
 
 with st.sidebar:
     st.caption(f"Signed in as **{user}**")
@@ -134,6 +147,12 @@ with st.sidebar:
         total = connection.execute("SELECT COUNT(*) AS n FROM files").fetchone()["n"]
         st.caption(f"{total:,} files catalogued")
     st.caption("The index refreshes nightly.")
+    if not rag.llm_enabled():
+        st.info("Offline mode: answers are quoted passages from the documents. "
+                "No AI model is called.")
+    index_ok, index_message = health.check(rag.PERSIST_PATH)
+    if not index_ok:
+        st.warning(f"Answers may be out of date: {index_message}.")
 
 
 # --- file search ----------------------------------------------------------
@@ -191,7 +210,16 @@ def render_chat():
             if msg["role"] == "assistant":
                 render_feedback(i, msg)
 
+    if DEMO and not st.session_state.messages:
+        st.caption("Try one:")
+        columns = st.columns(2)
+        for i, example in enumerate(DEMO_QUESTIONS):
+            if columns[i % 2].button(example, key=f"example_{i}", use_container_width=True):
+                st.session_state.pending_question = example
+                st.rerun()
+
     question = st.chat_input("Ask a question about your documents...")
+    question = question or st.session_state.pop("pending_question", None)
     if not question:
         return
 
@@ -220,18 +248,21 @@ def render_chat():
         chat_history = chat_history[-HISTORY_TURNS * 2:]
 
         with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                response = answer_question(
-                    chain, question, chat_history,
-                    log_context={"user": user, "mode": "content"},
-                    access_check=access_checker(),
-                )
+            placeholder = st.empty()
+            placeholder.markdown("_Searching documents..._")
+            response = answer_question(
+                chain, question, chat_history,
+                log_context={"user": user, "mode": "content"},
+                access_check=access_checker(),
+                user=user,
+                on_token=lambda text: placeholder.markdown(text + " ▌"),
+            )
             answer = response["answer"]
             sources = sorted(response["sources_used"])
             if response["guardrail"] and response["guardrail"].startswith("api_error"):
-                st.error(answer)
+                placeholder.error(answer)
             else:
-                st.markdown(answer)
+                placeholder.markdown(answer)
                 render_sources(sources)
 
     st.session_state.messages.append({

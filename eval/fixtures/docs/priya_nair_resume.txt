@@ -2,19 +2,19 @@ Priya Nair
 Austin, TX | priya.nair@example.com | +1 (555) 010-0300
 
 Professional Summary
-Senior Platform Engineer with 8 years of experience building distributed
-systems, data pipelines, and internal developer tooling. Focused on streaming ingestion and schema evolution.
+Senior data engineer with 6 years of experience in streaming ingestion and
+schema evolution. Prefers pipelines that can be replayed over pipelines that
+must never fail.
 
 Experience
 
-Senior Engineer | Soylent Corp, Austin, TX | Feb 2022 - Present
-- Led the Vertex project, consolidating deployment tooling across 30 services.
-- Built automated regression analysis that reduced failed releases materially.
-- Owned the on-call rotation and ran incident reviews for the platform group.
+Senior Engineer | Acme Robotics, Austin, TX | Jun 2024 - Present
+- Leads the Vertex project, moving robot telemetry from nightly batches to streaming.
+- Introduced versioned event schemas so producers and consumers deploy independently.
 
-Backend Engineer | Soylent Data, Remote | Aug 2018 - Jan 2022
-- Designed a reconciliation pipeline processing millions of events daily.
-- Migrated batch jobs to an event driven architecture with replay support.
+Data Engineer | Soylent Corp, Austin, TX | Jul 2019 - May 2024
+- Built a Kafka ingestion layer handling 50,000 events per second at peak.
+- Wrote the backfill tooling used to rebuild three years of history after a schema change.
 
 Skills
-Python, Go, Kubernetes, Terraform, PostgreSQL, Kafka
+Kafka, Flink, Python, Avro, BigQuery

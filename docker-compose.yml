@@ -20,6 +20,13 @@ services:
     # Published on loopback so DSM's reverse proxy (or Caddy) can reach it
     # while the app itself is never exposed to the LAN unencrypted.
     ports: ["127.0.0.1:8501:8501"]
+    # Streamlit's own liveness endpoint. No curl in the slim image, so the
+    # probe is Python.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
 
   # Indexes once at start, then nightly. A plain sleep loop rather than a
   # cron daemon: one process, one log stream, and no second scheduler to
@@ -36,6 +43,15 @@ services:
     # that can each silently break a schedule nobody looks at until the
     # index is a week stale.
     command: ["python", "-m", "indexer", "--loop"]
+    # Unhealthy when the last successful run is older than
+    # RAG_INDEX_MAX_AGE_HOURS (36h), so a stalled nightly job shows up in
+    # `docker ps` and DSM's container view instead of as stale answers.
+    healthcheck:
+      test: ["CMD", "python", "-m", "pipeline.health"]
+      interval: 30m
+      timeout: 30s
+      retries: 1
+      start_period: 10m
 
   # Only for a separate Linux host. On a Synology, leave this out and use
   # DSM's own reverse proxy instead: DSM already owns ports 80 and 443, so

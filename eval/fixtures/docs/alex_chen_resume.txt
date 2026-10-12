@@ -2,19 +2,19 @@ Alex Chen
 Boston, MA | alex.chen@example.com | +1 (555) 010-0200
 
 Professional Summary
-Senior Platform Engineer with 8 years of experience building distributed
-systems, data pipelines, and internal developer tooling. Focused on distributed tracing and observability tooling.
+Principal engineer with 10 years of experience in observability. Believes an
+outage you cannot explain is an outage that will happen again.
 
 Experience
 
-Principal Engineer | Umbrella Corp, Boston, MA | Feb 2022 - Present
-- Led the Nimbus project, consolidating deployment tooling across 30 services.
-- Built automated regression analysis that reduced failed releases materially.
-- Owned the on-call rotation and ran incident reviews for the platform group.
+Principal Engineer | Acme Robotics, Boston, MA | Jan 2024 - Present
+- Leads the Nimbus project, a single tracing and metrics stack for all services.
+- Cut mean time to diagnose SEV2 incidents from 90 to 25 minutes.
+- Chairs the weekly incident review.
 
-Backend Engineer | Umbrella Systems, Remote | Aug 2018 - Jan 2022
-- Designed a reconciliation pipeline processing millions of events daily.
-- Migrated batch jobs to an event driven architecture with replay support.
+Senior SRE | Umbrella Corp, Boston, MA | Sep 2016 - Dec 2023
+- Built the alerting pipeline that replaced 1,200 static thresholds with SLO-based alerts.
+- Ran the on-call program for 14 teams.
 
 Skills
-Python, Go, Kubernetes, Terraform, PostgreSQL, Kafka
+Python, OpenTelemetry, Prometheus, Grafana, Kubernetes

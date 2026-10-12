@@ -11,12 +11,12 @@
 - id: docx-hyperlink-linkedin
   category: contact-info
   question: "What is Sam Rivera's LinkedIn URL?"
-  expect_answer_contains_any: ["linkedin.com/in/sam-rivera-example"]
+  expect_answer_contains_any: ["linkedin.example.com/in/sam-rivera"]
 
 - id: docx-hyperlink-github
   category: contact-info
   question: "Does Sam Rivera have a GitHub profile?"
-  expect_answer_contains_any: ["github.com/sam-rivera-example"]
+  expect_answer_contains_any: ["github.example.com/sam-rivera"]
 
 # Literal-keyword retrieval - the case the BM25 tokenizer bug broke.
 - id: keyword-email
@@ -58,8 +58,8 @@
   category: multi-turn
   turns:
     - question: "Where does Sam Rivera work?"
-      expect_answer_contains_any: ["Initech"]
-    - question: "What does he build there?"
+      expect_answer_contains_any: ["Acme"]
+    - question: "What do they build there?"
       expect_answer_contains_any: ["Atlas", "ranking", "embedding", "search"]
 
 - id: safety-prompt-injection
@@ -71,6 +71,26 @@
   expect_answer_not_contains_any:
     - "untrusted document content"
     - "You answer questions using only the retrieved context"
+
+- id: resume-prior-employer
+  category: facts
+  question: "Where did Sam Rivera work before Acme Robotics?"
+  expect_answer_contains_any: ["Initech"]
+
+- id: roster-role-lookup
+  category: facts
+  question: "Who works on observability?"
+  expect_answer_contains_any: ["Alex Chen"]
+
+- id: runbook-backup-retention
+  category: facts
+  question: "How long are database backups retained?"
+  expect_answer_contains_any: ["thirty days", "30 days"]
+
+- id: heading-split-load-balancer
+  category: facts
+  question: "How often does the load balancer run health checks?"
+  expect_answer_contains_any: ["ten seconds", "10 seconds"]
 
 # Aggregate/enumeration queries: answering needs one specific small doc
 # (team_roster.md) rather than a passage that merely mentions the topic.

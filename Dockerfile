@@ -23,6 +23,11 @@ ENV RAG_EMBEDDING_MODEL=${EMBEDDING_MODEL}
 RUN python -c "from langchain_huggingface import HuggingFaceEmbeddings; \
     HuggingFaceEmbeddings(model_name='${EMBEDDING_MODEL}')"
 
+# Same reasoning for the reranker.
+ARG RERANK_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
+ENV RAG_RERANK_MODEL=${RERANK_MODEL}
+RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('${RERANK_MODEL}')"
+
 COPY . .
 
 # Runs as a non-root user: this process reads a share full of personal

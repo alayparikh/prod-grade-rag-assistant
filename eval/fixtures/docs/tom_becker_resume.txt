@@ -2,19 +2,18 @@ Tom Becker
 Denver, CO | tom.becker@example.com | +1 (555) 010-0400
 
 Professional Summary
-Senior Platform Engineer with 8 years of experience building distributed
-systems, data pipelines, and internal developer tooling. Focused on service mesh reliability and capacity planning.
+Staff reliability engineer with 9 years of experience in capacity planning and
+database operations. Has restored more production backups than anyone would like.
 
 Experience
 
-Staff Engineer | Initrode Corp, Denver, CO | Feb 2022 - Present
-- Led the Harbor project, consolidating deployment tooling across 30 services.
-- Built automated regression analysis that reduced failed releases materially.
-- Owned the on-call rotation and ran incident reviews for the platform group.
+Staff Engineer | Acme Robotics, Denver, CO | Aug 2023 - Present
+- Leads the Harbor project, automating database failover and quarterly restore drills.
+- Wrote the load-testing harness used to size every new cluster.
 
-Backend Engineer | Initrode Networks, Remote | Aug 2018 - Jan 2022
-- Designed a reconciliation pipeline processing millions of events daily.
-- Migrated batch jobs to an event driven architecture with replay support.
+Database Reliability Engineer | Initrode Corp, Denver, CO | Mar 2017 - Jul 2023
+- Ran PostgreSQL fleets of 300 instances with a four-hour recovery objective.
+- Moved schema changes to an expand-and-contract process, ending migration outages.
 
 Skills
-Python, Go, Kubernetes, Terraform, PostgreSQL, Kafka
+PostgreSQL, Terraform, Ansible, Go, capacity modelling
