@@ -25,7 +25,7 @@ halves never hold different numbers.
 |---|---|
 | `build_index.py` | Builds `web/index.json` from `eval/fixtures/docs/` (never from `docs/`), and `golden.json` for the check |
 | `web/index.html` | Page structure and all styles |
-| `web/scene.js` | The 3D hero (three.js): the word DEMO made of paper slips, posed four ways and blended by scroll position |
+| `web/scene.js` | The 3D hero (three.js): the word DEMO made of paper slips, posed five ways and blended by scroll position: corpus, two searches, ranked list, and the orders table with its answering row |
 | `web/search.js` | The query pipeline: embedding, BM25 keyword search, rank fusion, cross-encoder rerank, cutoff |
 | `web/app.js` | Wires scroll to the scene, and the search box to `search.js`; renders results |
 | `web/orders.js` | Order questions: query types, value extraction, per-role SQL views |

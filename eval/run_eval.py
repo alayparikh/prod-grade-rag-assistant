@@ -204,6 +204,9 @@ def run_order_case(item, chain):
     matches = lambda row, k, v: row.get(k) is None if v is None else v in row.values()  # noqa: E731
     if want and not any(all(matches(row, k, v) for k, v in want.items()) for row in rows):
         return item["id"], "FAIL", f"no row with {want}: {result['sql']}"
+    last = item.get("expect_last_values")
+    if last and not (rows and all(v in rows[-1].values() for v in last.values())):
+        return item["id"], "FAIL", f"last row {rows[-1] if rows else None} isn't {last}: {result['sql']}"
     if item.get("expect_why_contains") and item["expect_why_contains"].lower() not in (result["why"] or {}).get("text", "").lower():
         return item["id"], "FAIL", "the policy passage didn't explain the hold"
     return item["id"], "PASS", ""

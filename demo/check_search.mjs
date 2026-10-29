@@ -51,6 +51,9 @@ async function checkOrders(item) {
     return [false, `${t.intent.id}: expected ${item.expect_rows} rows, got ${rows.length}`];
   if (item.expect_values && !rows.some((row) => Object.entries(item.expect_values).every(([k, v]) => row[k] === v)))
     return [false, `${t.intent.id}: no row with ${JSON.stringify(item.expect_values)}`];
+  const last = item.expect_last_values;
+  if (last && !Object.entries(last).every(([k, v]) => rows.at(-1)?.[k] === v))
+    return [false, `${t.intent.id}: last row ${JSON.stringify(rows.at(-1))} isn't ${JSON.stringify(last)}`];
   const sentence = summarize(t, res, octx, access.hidden);
   for (const phrase of item.expect_summary_contains ?? []) {
     if (!sentence.includes(phrase)) return [false, `answer "${sentence}" lacks "${phrase}"`];

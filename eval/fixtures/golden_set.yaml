@@ -167,6 +167,14 @@
   expect_rows: 4
   expect_values: {event: shipped}
 
+# 1046 was in transit and delivered on the same day; the timeline must still
+# end with delivered, not show it before in_transit.
+- id: orders-tracking-same-day
+  mode: orders
+  question: "Track order 1046"
+  expect_rows: 5
+  expect_last_values: {event: delivered}
+
 - id: orders-items
   mode: orders
   question: "What's in order 1048?"

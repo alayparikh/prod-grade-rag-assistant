@@ -32,7 +32,7 @@ WHERE o.id = :order`,
     sql: `SELECT s.event, s.at, s.location
 FROM shipments_v s
 WHERE s.order_id = :order
-ORDER BY s.at`,
+ORDER BY s.at, s.seq`,
   },
   {
     id: "order_items", label: "What's in an order", needs: ["order"],
@@ -49,7 +49,7 @@ WHERE i.order_id = :order`,
     sql: `SELECT o.id, o.placed_at, o.status, o.hold_reason, o.promised_by
 FROM orders_v o JOIN customers_v c ON c.id = o.customer_id
 WHERE c.id = :customer
-ORDER BY o.placed_at DESC`,
+ORDER BY o.placed_at DESC, o.id DESC`,
   },
   {
     id: "late_orders", label: "Late orders",
@@ -59,7 +59,7 @@ ORDER BY o.placed_at DESC`,
 FROM orders_v o JOIN customers_v c ON c.id = o.customer_id
 WHERE o.delivered_at IS NULL AND o.status NOT IN ('cancelled', 'returned')
   AND o.promised_by < :today
-ORDER BY o.promised_by`,
+ORDER BY o.promised_by, o.id`,
   },
   {
     id: "on_hold", label: "Orders on hold",
@@ -68,7 +68,7 @@ ORDER BY o.promised_by`,
     sql: `SELECT o.id, c.name AS customer, o.hold_reason, o.promised_by
 FROM orders_v o JOIN customers_v c ON c.id = o.customer_id
 WHERE o.status = 'on_hold'
-ORDER BY o.promised_by`,
+ORDER BY o.promised_by, o.id`,
   },
   {
     id: "by_status", label: "Orders in one status", needs: ["status"],
@@ -77,7 +77,7 @@ ORDER BY o.promised_by`,
     sql: `SELECT o.id, c.name AS customer, o.placed_at, o.promised_by
 FROM orders_v o JOIN customers_v c ON c.id = o.customer_id
 WHERE o.status = :status
-ORDER BY o.placed_at DESC`,
+ORDER BY o.placed_at DESC, o.id DESC`,
   },
   {
     id: "count_by_status", label: "Order counts by status",
@@ -86,7 +86,7 @@ ORDER BY o.placed_at DESC`,
     sql: `SELECT o.status, COUNT(*) AS orders
 FROM orders_v o
 GROUP BY o.status
-ORDER BY orders DESC`,
+ORDER BY orders DESC, o.status`,
   },
   {
     id: "shipped_between", label: "Orders shipped in a period", needs: ["period"],
@@ -95,9 +95,13 @@ ORDER BY orders DESC`,
     sql: `SELECT o.id, c.name AS customer, o.shipped_at, o.carrier
 FROM orders_v o JOIN customers_v c ON c.id = o.customer_id
 WHERE o.shipped_at BETWEEN :from AND :to
-ORDER BY o.shipped_at`,
+ORDER BY o.shipped_at, o.id`,
   },
 ];
+
+// Every ORDER BY ends in a unique key (id, or seq for a timeline). Sorting on a
+// column that can tie leaves the database free to return tied rows in any
+// order, and the summary sentence names rows[0] - so it has to be stable.
 
 // ---- who may see what ------------------------------------------------------
 // The same roles as the document search. Every template reads only these

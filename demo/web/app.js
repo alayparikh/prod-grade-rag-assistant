@@ -34,13 +34,13 @@ let scene = null;
 function onScroll() {
   const rect = story.getBoundingClientRect();
   const span = rect.height - innerHeight;
-  // 0 at the top of the story, 3 at its end: one unit per pipeline step.
-  const p = Math.max(0, Math.min(1, -rect.top / span)) * 3.4;
+  // 0 at the top of the story, 4 at its end: one unit per step.
+  const p = Math.max(0, Math.min(1, -rect.top / span)) * 4.4;
   scene?.setProgress(p);
   heroCopy.style.opacity = String(Math.max(0, 1 - p * 2.5));
   steps.forEach((el) => {
     const at = Number(el.dataset.at);
-    el.classList.toggle("on", p > at - 0.55 && (at === 3 || p < at + 0.45));
+    el.classList.toggle("on", p > at - 0.55 && (at === steps.length || p < at + 0.45));
   });
 }
 addEventListener("scroll", onScroll, { passive: true });
@@ -126,7 +126,7 @@ segs.forEach((seg) => seg.addEventListener("change", (e) => {
   if (lastOrderQuestion) askOrders(lastOrderQuestion);
 }));
 
-// ---- the four failure cases ------------------------------------------------
+// ---- the five failure cases ------------------------------------------------
 // Each explanation is worked out from what the search actually returned, so
 // the page cannot claim something the run didn't show.
 const rankOf = (ids, source, chunks) => {
@@ -477,6 +477,8 @@ function watchRequests() {
   engine = new Engine(index);
   engine.files = index.files;
   showAccess();
+  // The story's numbers come from the data, so adding a document can't leave them stale.
+  $("#corpus-count").textContent = `${index.chunks.length} passages, ${index.files.length} files`;
   const loaded = {};
   setStatus("Loading search models (about 50 MB, once)…", 0);
   ready = engine.load((what, done, total) => {
@@ -496,6 +498,8 @@ function watchRequests() {
     const bytes = new Uint8Array(await (await fetch("orders.db")).arrayBuffer());
     ordersDb = new SQL.Database(bytes);
     octx = loadContext(ordersDb);
+    const orders = run(ordersDb, "SELECT COUNT(*) FROM orders", {}).rows[0][0];
+    $("#orders-count").textContent = `. Beside them: an orders database of ${orders} orders`;
   })();
   await ready;
   translator = new Translator((t) => engine.embed(t));

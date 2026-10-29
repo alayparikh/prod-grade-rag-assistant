@@ -161,8 +161,11 @@ def main():
         " promised_by TEXT NOT NULL, shipped_at TEXT, delivered_at TEXT);",
         "CREATE TABLE order_items (order_id INTEGER NOT NULL REFERENCES orders(id), sku TEXT NOT NULL"
         " REFERENCES products(sku), qty INTEGER NOT NULL);",
-        "CREATE TABLE shipments (order_id INTEGER NOT NULL REFERENCES orders(id), event TEXT NOT NULL,"
-        " at TEXT NOT NULL, location TEXT NOT NULL);",
+        # seq is the event's place in the order's own timeline. Two events can
+        # share a date (in transit and delivered the same day), and ORDER BY at
+        # alone leaves their order undefined; seq makes it the lifecycle order.
+        "CREATE TABLE shipments (order_id INTEGER NOT NULL REFERENCES orders(id), seq INTEGER NOT NULL,"
+        " event TEXT NOT NULL, at TEXT NOT NULL, location TEXT NOT NULL, PRIMARY KEY (order_id, seq));",
     ]
     for cid, name, region, tier in CUSTOMERS:
         slug = "".join(ch for ch in name.lower() if ch.isalnum())[:18]
@@ -176,8 +179,8 @@ def main():
     for oid, sku, qty in items:
         out.append(f"INSERT INTO order_items VALUES ({oid}, {q(sku)}, {qty});")
     for o in orders:
-        for event, at, loc in shipments(o):
-            out.append(f"INSERT INTO shipments VALUES ({o['id']}, {q(event)}, {q(at)}, {q(loc)});")
+        for seq, (event, at, loc) in enumerate(shipments(o), start=1):
+            out.append(f"INSERT INTO shipments VALUES ({o['id']}, {seq}, {q(event)}, {q(at)}, {q(loc)});")
     with open(OUT, "w") as f:
         f.write("\n".join(out) + "\n")
     print(f"Wrote {OUT}: {len(orders)} orders, {len(items)} items")

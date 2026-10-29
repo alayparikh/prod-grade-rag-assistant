@@ -1,6 +1,7 @@
 // The hero: the word DEMO built from paper slips, which the scroll then
 // carries through the pipeline - scattered into a corpus, pulled into two
-// retrieval lanes, and sorted into a ranked column. Four poses, blended by
+// retrieval lanes, sorted into a ranked column, and finally laid out as a
+// database table whose answer row lights up. Five poses, blended by
 // scroll position; nothing animates on its own except a slow idle drift,
 // which is switched off under prefers-reduced-motion.
 import * as THREE from "three";
@@ -9,6 +10,7 @@ const COLORS = {
   aluminum: 0xdce0e5,
   slip: 0xf7f8fa,
   cobalt: 0x2e4bff,
+  amber: 0xa8690a,   // the answering row, as on_hold is amber in the results
   violet: 0x7a3cff,  // meaning-search lane, as in the X-ray
   teal: 0x0f9d8a,    // exact-word lane
   steel: 0x7d8794,
@@ -81,12 +83,13 @@ export async function mountScene(canvas, { reducedMotion }) {
 
   // One "result" subset rides the pipeline to the front; the rest recede.
   // Ten of them form the reranked column, the top three in cobalt.
-  const RESULTS = 27, LANE = 4, RANKED = 10, TOP = 3;
+  // Step 4: twenty-five of them become a 5 x 5 table; the middle row answers.
+  const RESULTS = 27, LANE = 4, RANKED = 10, TOP = 3, COLS = 5, ROWS = 5, ANSWER_ROW = 2;
   const order = [...Array(count).keys()].sort(() => Math.random() - 0.5);
   const role = new Array(count).fill(-1);
   order.slice(0, RESULTS).forEach((idx, i) => { role[idx] = i; });
 
-  const poses = [[], [], [], []];
+  const poses = [[], [], [], [], []];
   for (let i = 0; i < count; i++) {
     const p = letters[i];
     poses[0].push({ pos: new THREE.Vector3(p.x, p.y, rand(-0.06, 0.06)), rot: new THREE.Euler(0, 0, rand(-0.12, 0.12)) });
@@ -114,19 +117,28 @@ export async function mountScene(canvas, { reducedMotion }) {
     } else {
       poses[3].push({ pos: far.clone().add(new THREE.Vector3(0, 0, -2)), rot: poses[1][i].rot, scale: 0.6 });
     }
+    if (k >= 0 && k < COLS * ROWS) {
+      // A table seen slightly from the side: rows of cells, flat and aligned.
+      const c = k % COLS, row = Math.floor(k / COLS);
+      poses[4].push({ pos: new THREE.Vector3(1.0 + (c - 2) * 0.44, 0.95 - row * 0.44, 1.3), rot: new THREE.Euler(-0.2, -0.3, 0),
+        scale: row === ANSWER_ROW ? 3.0 : 2.6 });
+    } else {
+      poses[4].push({ pos: poses[3][i].pos.clone(), rot: poses[3][i].rot, scale: 0.6 });
+    }
     for (const pose of poses) pose[i].scale ??= 1;
   }
 
   const white = new THREE.Color(COLORS.slip), cobalt = new THREE.Color(COLORS.cobalt);
   const violet = new THREE.Color(COLORS.violet), teal = new THREE.Color(COLORS.teal);
+  const amber = new THREE.Color(COLORS.amber);
   const clamp01 = (x) => Math.max(0, Math.min(1, x));
   const tmp = new THREE.Object3D(), qa = new THREE.Quaternion(), qb = new THREE.Quaternion(), col = new THREE.Color();
   const phase = Float32Array.from({ length: count }, () => rand(0, Math.PI * 2));
 
-  let progress = 0; // 0..3 across the four poses
+  let progress = 0; // 0..4 across the five poses
   let fit = 1;      // camera distance multiplier that keeps the word in frame
   function layout(time) {
-    const stage = Math.min(Math.floor(progress), 2);
+    const stage = Math.min(Math.floor(progress), 3);
     const t = ease(Math.min(1, Math.max(0, progress - stage)));
     const a = poses[stage], b = poses[stage + 1];
     const drift = reducedMotion ? 0 : 1;
@@ -144,7 +156,9 @@ export async function mountScene(canvas, { reducedMotion }) {
       const laneWeight = clamp01(progress - 1.2) * (1 - clamp01(progress - 2));
       col.copy(white);
       if (k >= 0 && k < LANE * 2) col.lerp(k < LANE ? violet : teal, laneWeight);
-      if (k >= 0 && k < TOP) col.lerp(cobalt, clamp01(progress - 2));
+      // The ranked top three turn cobalt, then hand over to the table's answer row.
+      if (k >= 0 && k < TOP) col.lerp(cobalt, clamp01(progress - 2) * (1 - clamp01(progress - 3)));
+      if (k >= 0 && Math.floor(k / COLS) === ANSWER_ROW && k < COLS * ROWS) col.lerp(amber, clamp01(progress - 3.2));
       mesh.setColorAt(i, col);
     }
     mesh.instanceMatrix.needsUpdate = true;
@@ -154,7 +168,7 @@ export async function mountScene(canvas, { reducedMotion }) {
     // laid out for a close camera, so it is released as the word dissolves.
     const zoom = 1 + (fit - 1) * Math.max(0, 1 - progress);
     camera.position.set(Math.sin(progress * 0.6) * 0.8, 0.1, (7.2 - Math.min(progress, 1.5) * 0.9) * zoom);
-    camera.lookAt(progress > 2 ? 0.5 * (progress - 2) : 0, 0, 0);
+    camera.lookAt(progress > 2 ? 0.5 * (Math.min(progress, 3) - 2) : 0, 0, 0);
   }
 
   function resize() {
@@ -178,5 +192,5 @@ export async function mountScene(canvas, { reducedMotion }) {
     renderer.render(scene, camera);
   });
 
-  return { setProgress(p) { progress = Math.max(0, Math.min(3, p)); } };
+  return { setProgress(p) { progress = Math.max(0, Math.min(4, p)); } };
 }

@@ -9,7 +9,7 @@ is real: names, emails (`@example.com`), phone numbers (`555-01xx`), URLs
 
 | Path | What it is |
 |---|---|
-| `docs/` | 18 documents: the business side (product catalog, order lifecycle, shipping policy, returns & warranty, support playbook), the engineering side (handbook, architecture notes, runbooks, security and testing policy, onboarding) and people (team roster, six resumes, one of them a `.docx` with hyperlinks) |
+| `docs/` | 18 documents: the business side (product catalog, order lifecycle, shipping policy, returns & warranty, support playbook), the engineering side (handbook, architecture notes, runbooks, security and testing policy, onboarding) and people (team roster, five resumes, one of them a `.docx` with hyperlinks) |
 | `orders.sql` | The orders database: 12 customers, 3 products, 80 orders with items and tracking events. **Generated, don't edit by hand** |
 | `make_orders.py` | Writes `orders.sql`. Deterministic, with a fixed "today" of 2026-10-28 stored in the `meta` table, so answers never drift |
 | `golden_set.yaml` | The eval questions and their expected answers, for documents, file search and orders |

@@ -52,7 +52,7 @@ VIEWS = {
     "orders_v": ["id", "customer_id", "placed_at", "status", "hold_reason", "carrier",
                  "tracking_no", "promised_by", "shipped_at", "delivered_at"],
     "order_items_v": ["order_id", "sku", "qty"],
-    "shipments_v": ["order_id", "event", "at", "location"],
+    "shipments_v": ["order_id", "seq", "event", "at", "location"],
     "products_v": ["sku", "model", "unit_price", "lead_time_days"],
 }
 
@@ -185,7 +185,9 @@ Facts:
 - An order is late if delivered_at IS NULL, status NOT IN ('cancelled','returned') and
   promised_by < today; or if delivered_at > promised_by.
 - shipments_v holds the tracking timeline: event in placed, picking, on_hold, shipped,
-  in_transit, delivered, cancelled, returned.
+  in_transit, delivered, cancelled, returned. seq is each event's place in the order's
+  timeline; order a timeline BY at, seq (events can share a date).
+- When ordering rows, end the ORDER BY with a unique column (id) so ties are stable.
 - "Late orders" with no other qualifier means late right now: not yet delivered.
 - Weeks run Monday to Sunday; "last week" is the previous full week, "this week" runs
   from Monday to today.

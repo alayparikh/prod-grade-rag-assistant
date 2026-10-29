@@ -66,7 +66,7 @@ a { color: inherit; }
 .bar #source-link { border-bottom-color: currentColor; }
 
 /* ---- scroll story -------------------------------------------------- */
-.story { height: 420vh; position: relative; }
+.story { height: 520vh; position: relative; }
 .stage { position: sticky; top: 0; height: 100vh; height: 100svh; overflow: hidden; }
 .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .fallback-word {
@@ -100,7 +100,8 @@ a { color: inherit; }
 .step p { margin: 0; }
 .k-meaning, .k-keyword { font-weight: 600; padding: 0 3px; color: var(--slip); }
 .k-meaning { background: var(--violet); } .k-keyword { background: var(--teal); }
-.step:last-child { border-left-color: var(--cobalt); }
+.step[data-at="3"] { border-left-color: var(--cobalt); }
+.step:last-child { border-left-color: var(--amber); }
 
 /* ---- console ------------------------------------------------------- */
 .console { padding: clamp(64px, 10vw, 128px) var(--gutter) 64px; max-width: 920px; margin: 0 auto; }
@@ -306,19 +307,24 @@ footer {
       </div>
       <ol class="steps">
         <li class="step" data-at="1">
-          <b>Step 1 of 3 · The corpus</b>
-          <h2>27 passages, 13 files</h2>
-          <p>A handbook, two runbooks, policies and five resumes, cut at their headings so every passage knows which section it came from.</p>
+          <b>Step 1 of 4 · The corpus</b>
+          <h2 id="corpus-count">55 passages, 18 files</h2>
+          <p>Product and order docs, shipping and support policies, engineering runbooks and five resumes, cut at their headings so every passage knows which section it came from<span id="orders-count">. Beside them: an orders database of 80 orders</span>.</p>
         </li>
         <li class="step" data-at="2">
-          <b>Step 2 of 3 · Two searches</b>
+          <b>Step 2 of 4 · Two searches</b>
           <h2>Meaning and exact words</h2>
           <p>One search matches what your question <span class="k-meaning">means</span>, the other matches the <span class="k-keyword">words in it</span>. Their rankings are merged into one candidate list.</p>
         </li>
         <li class="step" data-at="3">
-          <b>Step 3 of 3 · Rerank</b>
+          <b>Step 3 of 4 · Rerank</b>
           <h2>A second read</h2>
           <p>A second model reads each candidate beside your question and scores it. The top three are shown. If none scores high enough, the answer is that the documents don't say.</p>
+        </li>
+        <li class="step" data-at="4">
+          <b>Step 4 of 4 · Orders</b>
+          <h2>Or straight to the database</h2>
+          <p>Questions about orders become a SQL query instead. One row answers it, and the policy that explains it comes from the documents.</p>
         </li>
       </ol>
     </div>
