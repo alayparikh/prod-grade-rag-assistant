@@ -1,4 +1,16 @@
+// Page wiring for the demo. Nothing here searches or queries by itself:
+//   search.js does document search, orders.js turns order questions into SQL,
+//   scene.js draws the 3D hero. This file connects them to the page:
+//   - the scroll story (scroll position -> scene pose and captions)
+//   - roles ("Search as"), shared by the document and order sections
+//   - the five failure cases, whose explanations are computed from each run
+//   - rendering results, the X-ray panels and the privacy meter
+//   - startup: index, models, sql.js and orders.db all load before the
+//     privacy meter starts counting, so searching adds zero requests.
 import { Engine, tokenize } from "./search.js";
+import { INTENTS, Translator, applyRole, loadContext, run } from "./orders.js";
+
+const SQLJS = "https://cdn.jsdelivr.net/npm/sql.js@1.15.2/dist/";
 
 const EXAMPLES = [
   "What is the production deploy window?",
@@ -74,32 +86,45 @@ const ROLES = [
   { id: "admin", label: "Admin", can: () => true },
   { id: "engineer", label: "Engineer", can: (f) => !isResume(f) },
   { id: "hr", label: "HR", can: (f) => isResume(f) || ["team_roster.md", "company_handbook.md", "onboarding_guide.md", "security_policy.md"].includes(f) },
-  { id: "contractor", label: "Contractor", can: (f) => ["company_handbook.md", "onboarding_guide.md", "testing_standards.md"].includes(f) },
+  // Contractors staff the West warehouse: the order and shipping docs, not HR or engineering.
+  { id: "contractor", label: "Contractor", can: (f) => ["company_handbook.md", "onboarding_guide.md", "testing_standards.md",
+    "order_lifecycle.md", "shipping_policy.md", "product_catalog.md"].includes(f) },
 ];
 let role = ROLES[0];
 const allowed = () => new Set(engine.files.filter(role.can));
 
-const seg = $(".roles .seg");
-for (const r of ROLES) {
-  seg.insertAdjacentHTML("beforeend",
-    `<label><input type="radio" name="role" value="${r.id}" ${r === role ? "checked" : ""}><span>${r.label}</span></label>`);
-}
+// One role, shown in both sections.
+const segs = [...document.querySelectorAll(".roles .seg")];
+segs.forEach((seg, n) => {
+  for (const r of ROLES) {
+    seg.insertAdjacentHTML("beforeend",
+      `<label><input type="radio" name="role-${n}" value="${r.id}" ${r === role ? "checked" : ""}><span>${r.label}</span></label>`);
+  }
+});
 function showAccess() {
   if (!engine) return;
-  const open = allowed().size, hidden = engine.files.length - open, el = $(".access");
+  const open = allowed().size, hidden = engine.files.length - open;
+  const el = $("#try .access");
   el.textContent = hidden ? `Can open ${open} of ${engine.files.length} files · ${hidden} hidden from this role`
                           : `Can open all ${open} files`;
   el.classList.toggle("blocked", hidden > 0);
+  const scope = { admin: "Sees every order", engineer: "Sees every order · emails and prices hidden",
+    hr: "No access to order data", contractor: "West-region orders only · emails and prices hidden" }[role.id];
+  const oel = $("#orders .access");
+  oel.textContent = scope;
+  oel.classList.toggle("blocked", role.id !== "admin");
 }
 function setRole(id) {
   role = ROLES.find((r) => r.id === id);
-  seg.querySelector(`input[value="${id}"]`).checked = true;
+  segs.forEach((seg) => { seg.querySelector(`input[value="${id}"]`).checked = true; });
   showAccess();
 }
-seg.addEventListener("change", (e) => {
+segs.forEach((seg) => seg.addEventListener("change", (e) => {
   setRole(e.target.value);
-  if (lastQuestion) ask(lastQuestion); // same question, new permissions
-});
+  // Same questions, new permissions.
+  if (lastQuestion) ask(lastQuestion);
+  if (lastOrderQuestion) askOrders(lastOrderQuestion);
+}));
 
 // ---- the four failure cases ------------------------------------------------
 // Each explanation is worked out from what the search actually returned, so
@@ -163,6 +188,24 @@ const CASES = [
       ];
     },
   },
+  {
+    title: "It can't read the database",
+    body: "The answer to “where is my order” is a row in a database, not a sentence in a document.",
+    question: "Why is order 1042 late?",
+    kind: "orders",
+    explain(o) {
+      const docs = o.docsOnly;
+      const top = docs?.passages[0];
+      const row = o.row ?? {};
+      return [
+        `Document search alone ${top ? `returned ${escape(short(top.chunk.source))}, which never mentions order 1042`
+          : "found nothing about order 1042"}: no document can know an order's status.`,
+        row.status ? `The status is a row in the orders table: ${escape(row.status)}${row.hold_reason ? `, held for ${escape(row.hold_reason)}` : ""}, promised by ${escape(row.promised_by)}. ` +
+          `${o.why ? `Why that hold happens, and how it's cleared, comes from ${escape(o.why.chunk.source)}, shown beside it.` : ""}`
+          : "This role can't see that order, so the query returned nothing.",
+      ];
+    },
+  },
 ];
 
 const cases = $(".cases");
@@ -175,9 +218,10 @@ CASES.forEach((k, i) => {
   el.querySelector("button").addEventListener("click", () => {
     el.classList.add("ran");
     setRole(k.role ?? "admin");
-    input.value = k.question;
-    $("#try").scrollIntoView({ behavior: reduce ? "auto" : "smooth" });
-    ask(k.question, k);
+    const orders = k.kind === "orders";
+    (orders ? oinput : input).value = k.question;
+    $(orders ? "#orders" : "#try").scrollIntoView({ behavior: reduce ? "auto" : "smooth" });
+    orders ? askOrders(k.question, k) : ask(k.question, k);
   });
   cases.append(el);
 });
@@ -281,6 +325,134 @@ for (const q of EXAMPLES) {
   li.append(b); list.append(li);
 }
 
+// ---- orders ------------------------------------------------------------------
+const ORDER_EXAMPLES = [
+  "What's the status of order 1042?", "Track order 1043", "What's in order 1048?", "Which orders are late?",
+  "Which orders are on hold?", "Show orders for Juniper Fulfillment", "What shipped last week?",
+  "How many orders are in each status?",
+];
+const oform = $("#oask");
+const oinput = $("#oq");
+const obutton = oform.querySelector("button");
+const oresults = $("#oresults");
+let ordersDb = null, translator = null, octx = null, ordersReady = null, lastOrderQuestion = null;
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src; s.onload = resolve; s.onerror = () => reject(new Error(`couldn't load ${src}`));
+    document.head.append(s);
+  });
+}
+
+const SQL_WORDS = /\b(SELECT|FROM|JOIN|ON|WHERE|AND|NOT|IN|IS|NULL|AS|ORDER BY|GROUP BY|COUNT|BETWEEN|DESC)\b/g;
+function sqlHtml(sql, params) {
+  return escape(sql).replace(SQL_WORDS, "<b>$1</b>")
+    .replace(/:(\w+)/g, (m, n) => `<span class="param">:${n}</span>`);
+}
+// Prices get thousands separators; order numbers (4 digits) stay as typed.
+const fmt = (v) => (v == null ? "—" : typeof v === "number" && v > 9999 ? v.toLocaleString("en-US") : String(v));
+
+function cell(col, v, hidden) {
+  if (hidden.has(col)) return `<span class="hidden">hidden</span>`;
+  if (col === "status" || col === "event") return `<span class="st st-${escape(v)}">${escape(v)}</span>`;
+  return escape(fmt(v));
+}
+
+function table(res, hidden) {
+  if (!res.rows.length) return `<p class="empty-lane">No orders match${role.id === "contractor" ? " in the West region (all a Contractor can see)" : ""}.</p>`;
+  // One wide row reads better as a card than as a table you scroll sideways.
+  if (res.rows.length === 1 && res.columns.length > 4) {
+    return `<dl class="record">${res.columns.map((c, i) =>
+      `<div><dt>${escape(c)}</dt><dd>${cell(c, res.rows[0][i], hidden)}</dd></div>`).join("")}</dl>`;
+  }
+  const head = res.columns.map((c) => `<th${hidden.has(c) ? ' class="hidden"' : ""}>${escape(c)}</th>`).join("");
+  const body = res.rows.map((row) => `<tr>${row.map((v, i) => `<td>${cell(res.columns[i], v, hidden)}</td>`).join("")}</tr>`).join("");
+  return `<div class="tablewrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
+// The orders X-ray: which query type won and by how much, what was pulled
+// out of the question, and what came back.
+function oxray(t, res, access) {
+  const slot = (name, v) => `<li class="chip${v ? " answer" : ""}"><i>${name}</i><span>${v ? escape(v) : "—"}</span></li>`;
+  const p = t.slots.period;
+  return `<details class="xray" open><summary>Query X-ray<small>how the question became SQL</small></summary>
+    <div class="lanes olanes">
+      <div class="lane meaning"><h4>Query type, by meaning</h4><ol>${t.ranked.slice(0, 4).map(([intent, score], i) =>
+        `<li class="chip${i === 0 && t.intent ? " answer" : ""}"><i>${i + 1}</i><span>${escape(intent.label)}</span><em>${score.toFixed(2)}</em></li>`).join("")}</ol></div>
+      <div class="lane keyword"><h4>Values found</h4><ol>
+        ${slot("order", t.slots.order)}${slot("customer", t.slots.customer?.name)}${slot("status", t.slots.status)}${slot("dates", p ? `${p.label} (${p.from} → ${p.to})` : null)}
+      </ol></div>
+      <div class="lane ranked"><h4>Result</h4><ol>
+        <li class="chip answer"><i>rows</i><span>${res ? res.rows.length : 0}</span></li>
+        <li class="chip"><i>role</i><span>${escape(role.label)}</span></li>
+        ${access?.hidden.size ? `<li class="chip"><i>hidden</i><span>${escape([...access.hidden].join(", "))}</span></li>` : ""}
+      </ol></div>
+    </div></details>`;
+}
+
+async function askOrders(question, k = null) {
+  question = question.trim();
+  if (!question || !ready) return;
+  lastOrderQuestion = question;
+  obutton.disabled = true;
+  try {
+    await ready;
+    await ordersReady;
+    const access = applyRole(ordersDb, role.id);
+    const t = await translator.translate(question, octx);
+    const head = `<p class="readout">searched as <strong>${role.label}</strong>${t.intent ? ` · query type <strong>${escape(t.intent.label)}</strong> · match <strong>${t.score.toFixed(2)}</strong>` : ""}</p>`;
+
+    if (access.denied) {
+      oresults.innerHTML = head + `<div class="empty denied"><h3>No access to order data</h3><p>The ${role.label} role can't query orders. Switch role to see the difference.</p></div>`;
+      return;
+    }
+    if (!t.intent) {
+      oresults.innerHTML = head + `<div class="empty"><h3>That isn't an order question I can turn into a query</h3>
+        <p>This demo's translator handles: ${INTENTS.map((i) => escape(i.label.toLowerCase())).join(" · ")}. The full app writes open-ended SQL with Claude.</p></div>` + oxray(t, null, access);
+      return;
+    }
+    if (t.missing.length) {
+      const hint = { order: "Which order? Add the order number, like 1042.", customer: "Which customer? Name them, like Juniper Fulfillment.",
+        status: "Which status? For example shipped, picking, delivered or cancelled.", period: "When? For example last week, this week or October." }[t.missing[0]];
+      oresults.innerHTML = head + `<div class="empty"><h3>One more detail</h3><p>${hint}</p></div>` + oxray(t, null, access);
+      return;
+    }
+
+    const res = run(ordersDb, t.sql, t.params);
+    const row = res.rows.length === 1 ? Object.fromEntries(res.columns.map((c, i) => [c, res.rows[0][i]])) : null;
+    // A held or late order: find the policy that explains it.
+    let why = null;
+    if (row?.status) {
+      const late = !row.delivered_at && !["cancelled", "returned"].includes(row.status) && row.promised_by < octx.today;
+      const q = row.hold_reason ? `${row.hold_reason.replace(/_/g, " ")} hold` : late ? "order is late, contact the customer" : null;
+      if (q) why = (await engine.search(q, { allow: allowed() })).passages[0] ?? null;
+    }
+    const docsOnly = k ? await engine.search(question, { allow: allowed() }) : null;
+    const params = Object.entries(t.params).map(([n, v]) => `<span class="param">${escape(n)}</span> = ${escape(fmt(v))}`).join(" · ");
+    const explain = k ? `<div class="explain"><b>What just happened</b>${k.explain({ docsOnly, row, why }).map((x) => `<p>${x}</p>`).join("")}</div>` : "";
+    const whyHtml = why ? `<aside class="why"><b>Why · from ${escape(why.chunk.source)}</b>
+      <p>${escape(why.chunk.text.replace(/^Section: .*\n/, ""))}</p></aside>` : "";
+    oresults.innerHTML = explain + head +
+      `<div class="sqlblock"><pre><code>${sqlHtml(t.sql, t.params)}</code></pre><p class="params">${params || "no parameters"} · runs against your role's views</p></div>` +
+      `<div class="answer-grid${why ? " with-why" : ""}">${table(res, access.hidden)}${whyHtml}</div>` + oxray(t, res, access);
+  } catch (e) {
+    oresults.innerHTML = `<div class="empty"><h3>The query failed</h3><p>${escape(e.message)}. Reload the page to try again.</p></div>`;
+  } finally {
+    obutton.disabled = false;
+  }
+}
+
+oform.addEventListener("submit", (e) => { e.preventDefault(); askOrders(oinput.value); });
+const olist = $("#orders .examples");
+for (const q of ORDER_EXAMPLES) {
+  const li = document.createElement("li");
+  const b = document.createElement("button");
+  b.type = "button"; b.textContent = q;
+  b.addEventListener("click", () => { oinput.value = q; askOrders(q); });
+  li.append(b); olist.append(li);
+}
+
 // ---- privacy meter ---------------------------------------------------------
 // Counts every network request the page makes after the models are in
 // memory. Searching should never add to it; anyone can check in DevTools.
@@ -305,10 +477,25 @@ function watchRequests() {
   setStatus("Loading search models (about 50 MB, once)…", 0);
   ready = engine.load((what, done, total) => {
     if (what === "embedder-ready") { button.disabled = false; return; }
-    if (what === "reranker-ready") { setStatus("Ready."); watchRequests(); return; }
+    if (what === "reranker-ready") { setStatus("Ready."); return; }
     loaded[what] = done / total;
     const fraction = ((loaded.embedder ?? 0) + (loaded.reranker ?? 0)) / 2;
     setStatus("Loading search models (about 50 MB, once)…", fraction);
   });
   ready.catch((e) => setStatus(`Couldn't load the search models: ${e.message}. Check your connection and reload.`));
+
+  // The orders database and SQLite load with everything else, before the
+  // privacy meter starts, so querying orders adds no requests either.
+  ordersReady = (async () => {
+    await loadScript(`${SQLJS}sql-wasm.js`);
+    const SQL = await window.initSqlJs({ locateFile: (f) => `${SQLJS}${f}` });
+    const bytes = new Uint8Array(await (await fetch("orders.db")).arrayBuffer());
+    ordersDb = new SQL.Database(bytes);
+    octx = loadContext(ordersDb);
+  })();
+  await ready;
+  translator = new Translator((t) => engine.embed(t));
+  await Promise.all([ordersReady, translator.ready()]);
+  obutton.disabled = false;
+  watchRequests();
 })();

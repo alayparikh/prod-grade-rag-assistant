@@ -28,7 +28,8 @@ halves never hold different numbers.
 | `web/scene.js` | The 3D hero (three.js): the word DEMO made of paper slips, posed four ways and blended by scroll position |
 | `web/search.js` | The query pipeline: embedding, BM25 keyword search, rank fusion, cross-encoder rerank, cutoff |
 | `web/app.js` | Wires scroll to the scene, and the search box to `search.js`; renders results |
-| `check_search.mjs` | Runs the golden-set questions through `search.js` in Node; CI fails on any miss |
+| `web/orders.js` | Order questions: query types, value extraction, per-role SQL views |
+| `check_search.mjs` | Runs the golden-set questions through `search.js` and `orders.js` in Node; CI fails on any miss |
 
 ## The query path, step by step (`search.js`)
 
@@ -55,7 +56,7 @@ python -m http.server 8765 --directory demo/web   # then open http://localhost:8
 Check the browser search against the golden set:
 
 ```bash
-npm install --prefix demo/.node @huggingface/transformers@3.7.1
+npm install --prefix demo/.node @huggingface/transformers@3.7.1 sql.js@1.15.2
 node demo/check_search.mjs
 ```
 
@@ -67,6 +68,28 @@ node demo/check_search.mjs
 | **Search as** (Admin / Engineer / HR / Contractor) | Permissions are enforced, not just hidden | Each role maps to the files it may open; `search.js` drops everything else *before* retrieval, as the Python app's group filter does. A blocked file gets the same "not covered" message as a missing one, so its existence doesn't leak |
 | **Pipeline X-ray** | Why hybrid search beats either half alone | The four ranked lists side by side; hover a passage to follow it across them |
 | **Requests since the models loaded** | Nothing you type leaves the browser | A `PerformanceObserver` counts every network request after load. Anyone can confirm it in DevTools |
+
+## Ask the orders (`orders.js`)
+
+Order questions run against a real SQLite database in the browser (sql.js,
+built in CI from `eval/fixtures/orders.sql`). There's no language model, so
+`orders.js` is a **pattern translator**: it matches the question to one of
+nine query types by meaning (the same embedding model the document search
+loads), pulls out the order number, customer, status and dates, and fills in
+a **parameterized** SQL template. Nothing typed ever becomes SQL text.
+
+- It shows the SQL and its parameters before the result.
+- Below a similarity of 0.45 it says it can't turn the question into a query
+  instead of guessing (paraphrased order questions scored 0.51+, document and
+  off-topic questions at most 0.36).
+- Roles apply through views rebuilt per query: Engineer sees prices as
+  hidden, Contractor sees West-region orders only, HR has no access.
+- For a held or late order, the matching policy passage from the documents is
+  shown beside the row.
+
+`check_search.mjs` runs the golden set's 15 order cases through this code on
+every deploy. The Python app answers open-ended order questions with Claude
+(`search/orders.py`); `run_eval.py --live` checks it against the same cases.
 
 ## What it cannot do
 

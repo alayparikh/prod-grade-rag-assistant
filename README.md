@@ -1,6 +1,6 @@
 # RAG Assistant
 
-Chat with your own PDFs/Word/text files. Embeddings run locally (free); only answer generation calls Claude.
+Chat with your own PDFs/Word/text files. Embedding, keyword search and reranking run locally (free); Claude is called only to grade relevance and write the answer, and not at all in offline mode.
 
 **[▶ Try the live demo](https://alayparikh.github.io/prod-grade-rag-assistant/)**: a fictional company's handbook, runbooks and resumes, searched entirely in your browser (no server, no AI calls, no sign-in). How it works: [demo/README.md](demo/README.md).
 
@@ -41,16 +41,19 @@ python rag.py --cli             # terminal chat instead
 python rag.py --cli --reindex   # force a full rebuild of the index
 ```
 
-First run embeds everything into `chroma_db/`. Later runs only re-embed files that are **new or changed** — edit a file, hit **Sync documents** in the sidebar, no restart needed.
+First run embeds everything into `chroma_db/`. Later runs only re-embed files that are **new or changed**. To pick up edited files, run `python -m indexer` (or restart the app, which syncs on start); in a deployment the indexer does this nightly.
 
 ## Architecture
 
 **Ingest** (local, no API calls):
 
 ```
-docs/ → discover_files() → file_hash() vs manifest.json (skip unchanged)
-      → load_file() → split_documents() (1000 chars, 200 overlap)
-      → tag chunks with ACL groups → local MiniLM embeddings → Chroma
+docs/ → discover_files() → file_hash() + CHUNKER_VERSION vs manifest.json (skip unchanged)
+      → load_file()        .docx headings become markdown headings, hyperlinks recovered
+      → split_documents()  split at headings, then 1000-char windows; each chunk
+                           prefixed with its section path  (pipeline/chunking.py)
+      → tag chunks with ACL groups → local MiniLM embeddings → Chroma + SQLite FTS5
+      → write indexer_status.json heartbeat                 (pipeline/health.py)
 ```
 
 **Query** (only Claude usage):
@@ -66,6 +69,7 @@ question → answer_question()          ← every guardrail lives here
    ├ cross-encoder rerank → top 10     local, pipeline/rerank.py
    ├ Haiku relevance grading           nothing relevant → rewrite query, retry once
    ├ structured-output answer → claude-sonnet-5, streamed
+   │    └ offline (RAG_LLM=off or no key): top reranked passages quoted, -6 score cutoff
    ├ validate sources_used ⊆ retrieved, redact secrets
    └ log to logs/events.jsonl
 ```
@@ -82,9 +86,11 @@ question → answer_question()          ← every guardrail lives here
 | `search/metadata.py` | Question → file-name search over the catalogue |
 | `auth/smb.py` | NAS login and per-file access checks |
 | `pipeline/` | Query stages: rerank, grading, cache, chunking, tracing, index health |
+| `search/orders.py` | Order questions: SQL guard, read-only connection, per-role views, prompt |
+| `demo/` | The in-browser demo published to GitHub Pages ([demo/README.md](demo/README.md)) |
 | `permissions.yaml` | Folder → group ACL map, pending NAS ACL tagging |
 
-**Adaptive retrieval breadth.** `k` is derived from corpus size (`compute_k()`), not hardcoded — roughly +1 per 100 chunks, clamped to 4–20, overridable with `RAG_RETRIEVAL_K`. A fixed `k=4` was fine at 54 chunks (the top 7% of the corpus) but silently starved recall at 1,038 chunks (top 0.4%): a document listing every employee stopped being retrieved for "how many employees are there", and the assistant correctly refused rather than guessing. Wider retrieval costs more per question — measured ~$0.011 → ~$0.020 — which is the deliberate tradeoff.
+**Adaptive retrieval breadth.** `k` is derived from corpus size (`compute_k()`), not hardcoded — roughly +1 per 100 chunks, clamped to 4–20, overridable with `RAG_RETRIEVAL_K`. A fixed `k=4` was fine at 54 chunks (the top 7% of the corpus) but silently starved recall at 1,038 chunks (top 0.4%): a document listing every employee stopped being retrieved for "how many employees are there", and the assistant correctly refused rather than guessing. Wider retrieval cost more per question (measured ~$0.011 → ~$0.020) until the reranker and Haiku grading started trimming what reaches Sonnet: on the fixture golden set an answered question now costs about $0.0055.
 
 **Notable implementation details:** `.docx` hyperlinks are recovered from the document's relationship table (plain-text extraction drops the URL and keeps only anchor text like "LinkedIn"). BM25 uses a custom regex tokenizer — the default splits on whitespace, making a whole URL one unmatchable token.
 
@@ -92,7 +98,8 @@ question → answer_question()          ← every guardrail lives here
 
 | What | Where |
 |---|---|
-| `ANTHROPIC_API_KEY` | `.env` — required, exits without it |
+| `ANTHROPIC_API_KEY` | `.env` — optional; without it the app runs offline |
+| `RAG_LLM` | `auto` (default: Claude if a key is set), `off` (never calls an API, even with a key; use on public instances), `anthropic` |
 | Your documents | `docs/` |
 | `MODEL` | `rag.py` — defaults to `claude-sonnet-5` |
 | `EMBEDDING_MODEL` | `rag.py` — defaults to `all-MiniLM-L6-v2` (small, no GPU) |
@@ -111,6 +118,10 @@ All enforced inside `answer_question()`:
 - **Typed error handling** — auth/rate-limit/timeout/connection failures each get a distinct message instead of a raw traceback.
 - **Secret redaction** — narrow, high-precision patterns only (AWS keys, API keys, SSN format). A generic "long number" pattern would false-positive on medical record IDs and phone numbers.
 - **Source attribution** — the "Sources" footer lists only files Claude reports actually using, via a `sources_used` schema field (`with_structured_output`), validated against what was retrieved. A plain text-instruction version of this was tried first and proved unreliable — the model dropped it on longer answers.
+- **Relevance grading fails open** — Haiku decides which chunks can help and, if none can, the query is rewritten and retried once. A grading error keeps every chunk: grading trims cost and noise, it never authorizes.
+- **Answer cache** — keyed on the user, the normalised question and the index version, first turns only; a hit re-runs the access check on every source file, so revoked permissions turn it into a miss.
+- **Streaming redaction** — redaction runs on the whole answer-so-far and the newest 80 characters are held back, so a secret split across two stream chunks is never on screen.
+- **Offline mode** — `RAG_LLM=off` never constructs an API client; answers are quoted passages, and passages scoring below the reranker cutoff become a refusal.
 - **Rate limiting** (web UI only) — 30 questions/hour per session. In-memory; multi-instance needs Redis.
 
 ## Logging
@@ -143,7 +154,7 @@ python eval/run_eval.py          # retrieval-only, free — checks the right chu
 python eval/run_eval.py --live   # real API calls — checks generated answers
 ```
 
-`--live` additionally verifies refusal and injection resistance. An `ERROR` (vs. `FAIL`) means the API call itself failed, not a quality regression. Update the golden set when you change `docs/` — a stale one gives false failures and false passes.
+The retrieval-only run checks the reranked top 10, which is what the model actually sees. `--live` additionally verifies refusal and injection resistance, and an LLM judge fails any answer making a claim the retrieved text doesn't support (`--no-judge` to skip); it runs with the answer cache off so a cached answer can't hide a regression. An `ERROR` (vs. `FAIL`) means the API call itself failed, not a quality regression. Update the golden set when you change `docs/` — a stale one gives false failures and false passes.
 
 **Why both tests and evals.** A hybrid retriever is deliberately redundant: when BM25 degrades, vector search often still surfaces the right chunk. That's good for users and bad for detection — a deliberately broken `_tokenize()` was measured passing the full retrieval eval while `tests/test_units.py` caught it immediately. Evals cover the pipeline end to end; unit tests guard the components the pipeline can mask.
 
@@ -151,7 +162,9 @@ python eval/run_eval.py --live   # real API calls — checks generated answers
 
 `.github/workflows/ci.yml` runs unit tests + the retrieval eval on every push and PR — no API key, no cost. It runs against the committed synthetic corpus in `eval/fixtures/` (not `docs/`, which is git-ignored), driven by the `RAG_DOCS_PATH` / `RAG_PERSIST_PATH` / `RAG_LOG_PATH` env overrides. The `--live` eval is a manual `workflow_dispatch` job, since it costs money and needs `ANTHROPIC_API_KEY` in repo secrets.
 
-The fixture corpus is 30 chunks of deliberately competing content — several similar résumés plus engineering runbooks — because a small or semantically well-separated corpus lets every query retrieve everything, and an eval that can't fail is worse than no eval.
+`.github/workflows/pages.yml` builds and publishes the in-browser demo. It runs the golden set through the demo's JavaScript search code (`demo/check_search.mjs`) and refuses to deploy if that copy of the query pipeline has drifted from the Python one.
+
+The fixture corpus is 55 chunks across 18 files of deliberately competing content, plus an 80-order database (`eval/fixtures/orders.sql`, generated by `make_orders.py` with a fixed "today" of 2026-10-28 so every answer stays stable) — several similar résumés plus engineering runbooks — because a small or semantically well-separated corpus lets every query retrieve everything, and an eval that can't fail is worse than no eval.
 
 ## NAS deployment
 
@@ -210,6 +223,7 @@ document exists.
 | `RAG_AUTH_MODE=none` | Local development only — no login, no access checks |
 | `RAG_META_DB` | File catalogue (default `<persist>/meta.sqlite`) |
 | `RAG_EXCLUDE_GLOBS` | Extra directory/file globs to skip while crawling |
+| `RAG_ORDERS_DB` / `RAG_ORDER_GROUP_ROLES` | Orders database and group → order-role mapping (see `.env.example`) |
 
 ### Deploying
 
@@ -219,7 +233,10 @@ docker compose up -d --build app indexer          # on a Synology, DSM owns 443
 ```
 
 `app` serves the UI, `indexer` re-indexes nightly at `RAG_INDEX_AT`, and
-`caddy` terminates TLS. On a Synology, leave Caddy out and use DSM's own
+`caddy` terminates TLS. Both have healthchecks: `app` probes Streamlit, and
+`indexer` turns unhealthy when the last successful run is older than
+`RAG_INDEX_MAX_AGE_HOURS` (36h), so a stalled nightly job shows in `docker ps`
+instead of as stale answers. The app also warns users when the index is stale. On a Synology, leave Caddy out and use DSM's own
 reverse proxy — DSM already owns ports 80 and 443. See
 [DEPLOY.md](DEPLOY.md). Both Python services mount the share read-only, so a bug here cannot
 write to the NAS even if the service account is later over-granted. The
@@ -234,7 +251,22 @@ membership resolves before turning `RAG_ACL_TAGGING` on. Until then the
 query-time check stands alone, which is correct but slower for users with
 narrow access.
 
-### Two search modes
+### Three modes
+
+**Ask about orders** turns a question into SQL over the orders database and
+answers from the result, alongside the policy passage that explains it
+("why is order 1042 late?" → the row says `on_hold, address_verification`;
+the shipping policy says what that hold means and how it's cleared). Claude
+writes the SQL, and none of it is trusted:
+
+- `search/orders.py` parses it with sqlglot and accepts only one `SELECT`
+  over the role views, with no comments and a forced `LIMIT 50`.
+- It runs on a **read-only** SQLite connection with a 2-second budget.
+- Before every query the views are rebuilt for the asker's role: Admin sees
+  everything, Engineer gets no emails or prices, Contractor sees West-region
+  orders only, and anyone unmapped gets nothing. An injected "select every
+  email" returns NULLs because the view has none to give.
+- The event log records the SQL and the row count, never the rows.
 
 **Ask about content** is the RAG path. **Find a file** matches names and
 folder paths through SQLite FTS5 — it costs nothing per query and covers

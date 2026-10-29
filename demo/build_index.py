@@ -23,6 +23,25 @@ OUT = os.path.join(ROOT, "demo", "web", "index.json")
 GOLDEN_IN = os.path.join(ROOT, "eval", "fixtures", "golden_set.yaml")
 # For demo/check_search.mjs; Node has no YAML parser built in.
 GOLDEN_OUT = os.path.join(ROOT, "demo", "golden.json")
+ORDERS_SQL = os.path.join(ROOT, "eval", "fixtures", "orders.sql")
+ORDERS_DB = os.path.join(ROOT, "demo", "web", "orders.db")
+
+
+# The orders database the page queries with sql.js. Rebuilt from the
+# committed SQL every time, so the shipped file can never drift from it.
+def build_orders_db():
+    import sqlite3
+
+    if os.path.exists(ORDERS_DB):
+        os.remove(ORDERS_DB)
+    connection = sqlite3.connect(ORDERS_DB)
+    with open(ORDERS_SQL) as f:
+        connection.executescript(f.read())
+    connection.commit()
+    count = connection.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
+    connection.execute("VACUUM")
+    connection.close()
+    return count
 
 
 def main():
@@ -70,8 +89,10 @@ def main():
     with open(GOLDEN_IN) as f, open(GOLDEN_OUT, "w") as out:
         json.dump(yaml.safe_load(f), out, indent=1)
 
+    orders = build_orders_db()
     print(f"Wrote {OUT}: {len(chunks)} chunks from {len(paths)} files, "
-          f"{os.path.getsize(OUT) // 1024} KB")
+          f"{os.path.getsize(OUT) // 1024} KB; {ORDERS_DB}: {orders} orders, "
+          f"{os.path.getsize(ORDERS_DB) // 1024} KB")
 
 
 if __name__ == "__main__":

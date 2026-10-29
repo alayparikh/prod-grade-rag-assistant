@@ -1,3 +1,15 @@
+"""Streamlit UI. Deliberately thin: every decision lives in rag.py and search/.
+
+Three modes, each a single call into the engine:
+    Ask about content -> rag.answer_question       (RAG over documents)
+    Ask about orders  -> rag.answer_order_question (NL -> guarded SQL)
+    Find a file       -> search.metadata            (file names, no API)
+
+This file owns only what is per-session: NAS login (auth/smb.py; the password
+never leaves session memory), the per-session rate limit, chat history,
+feedback buttons, and rendering. Run with `python rag.py` or
+`streamlit run app.py`; RAG_AUTH_MODE=none skips login for local use.
+"""
 import os
 import time
 
@@ -136,7 +148,7 @@ with st.sidebar:
     st.divider()
     mode = st.radio(
         "Mode",
-        ["Ask about content", "Find a file"],
+        ["Ask about content", "Ask about orders", "Find a file"],
         help="Content search reads inside documents. File search matches "
              "names and folders, and covers files whose contents aren't "
              "indexed (images, drawings, archives).",
@@ -189,6 +201,55 @@ def render_file_search():
             st.code(smb.nas_links(row["path"])["unc"], language=None)
         except ValueError:
             st.code(row["path"], language=None)  # local corpus, not on the NAS
+
+
+# --- order questions ------------------------------------------------------
+# The role decides which orders and columns the query can see. On the NAS it
+# comes from the user's groups (RAG_ORDER_GROUP_ROLES maps them); locally,
+# RAG_ORDER_ROLE sets it for testing.
+@st.cache_data(ttl=600, show_spinner=False)
+def order_role_for(username):
+    from indexer import acl
+    from search import orders
+    return orders.role_for_groups(acl.groups_for_user(username))
+
+
+def render_orders():
+    from search import orders
+
+    role = order_role_for(user) if nas_session else os.environ.get("RAG_ORDER_ROLE", "admin")
+    st.caption(f"Order questions run as **{role}**. "
+               + {"admin": "Every order and column.", "engineer": "Every order; emails and prices hidden.",
+                  "contractor": "West-region orders only; emails and prices hidden.",
+                  "none": "No access to order data."}.get(role, ""))
+    question = st.text_input("Ask about orders", placeholder="Why is order 1042 late?")
+    if not question:
+        return
+
+    with st.spinner("Querying orders..."):
+        result = rag.answer_order_question(
+            question, role, rag_chain=load_chain(), access_check=access_checker(),
+            log_context={"user": user, "mode": "orders"},
+        )
+    guardrail = result["guardrail"] or ""
+    if guardrail.startswith("api_error"):
+        st.error(result["answer"])
+        return
+    st.markdown(result["answer"])
+    if result["sql"]:
+        with st.expander("SQL that ran", expanded=True):
+            st.code(result["sql"], language="sql")
+            st.caption("Checked before running: one read-only SELECT over your role's views, at most "
+                       f"{orders.MAX_ROWS} rows.")
+    if result["columns"]:
+        hidden = set(result["hidden"])
+        st.dataframe(
+            [{c: ("hidden" if c in hidden else v) for c, v in zip(result["columns"], row)} for row in result["rows"]],
+            hide_index=True, use_container_width=True,
+        )
+    if result["why"]:
+        st.markdown(f"**Why** · from `{result['why']['source']}`")
+        st.markdown("> " + result["why"]["text"].replace("\n", "\n> "))
 
 
 # --- content chat ---------------------------------------------------------
@@ -310,5 +371,7 @@ def render_feedback(index, msg):
 
 if mode == "Find a file":
     render_file_search()
+elif mode == "Ask about orders":
+    render_orders()
 else:
     render_chat()

@@ -1,3 +1,29 @@
+"""The engine: ingest, retrieval, guardrails and answers.
+
+Ingest (local, no API calls)
+    discover_files -> file_stamp (size+mtime, then sha256) vs manifest.json
+    -> load_file (PDF/DOCX/XLSX/PPTX/EML/text, OCR for scans)
+    -> split_documents (pipeline/chunking.py: headings first, section-labelled)
+    -> ACL group tags -> local MiniLM embeddings -> Chroma + SQLite FTS5.
+    sync_vectorstore re-embeds only new/changed files (or a new CHUNKER_VERSION).
+
+Answering documents: answer_question() is the only entry point, so every
+guardrail applies to the CLI, the web UI and the eval alike:
+    length cap -> answer cache (per user + index version) -> standalone rewrite
+    -> hybrid retrieval (vector + BM25, rank-fused) -> per-file NAS access check
+    -> cross-encoder rerank -> Haiku relevance grade (rewrite + retry once)
+    -> Sonnet structured answer (streamed) or offline quoted passages
+    -> sources_used validated against what was retrieved -> secret redaction
+    -> one JSON log line with timings, tokens and cost.
+
+Answering orders: answer_order_question() has Claude write SQL, which
+search/orders.py guards (one SELECT over per-role views, LIMIT, read-only,
+time budget) before it runs; the policy passage explaining a held or late
+order comes from the same retrieval pipeline.
+
+Config is environment variables (see .env.example); RAG_LLM=off guarantees no
+API client is ever constructed.
+"""
 import argparse
 import hashlib
 import json
@@ -1180,6 +1206,112 @@ def _stream_answer(answer_chain, inputs, config, on_token):
     if not isinstance(last, AnswerWithSources):
         last = AnswerWithSources.model_validate(last)
     return last
+
+
+# ---- order questions ----------------------------------------------------------
+# The orders database. Built from the fixture SQL on first use in dev and the
+# demo; a deployment points this at a read-only copy of the real one.
+ORDERS_DB = os.environ.get("RAG_ORDERS_DB", os.path.join(PERSIST_PATH, "orders.db"))
+
+ORDER_ANSWER_PROMPT = """Answer the question from the query result below, and from the policy
+passage if one is given. One to three sentences. Quote order numbers, dates and statuses
+exactly as they appear. A value shown as "hidden" is withheld by the asker's permissions:
+say it is hidden, never guess it. Don't mention SQL or tables.
+
+Question: {question}
+
+Query result ({count} rows):
+{table}
+{passage}"""
+
+
+def _rows_as_text(columns, rows, hidden):
+    lines = [" | ".join(columns)]
+    for row in rows:
+        lines.append(" | ".join("hidden" if c in hidden else ("" if v is None else str(v))
+                                for c, v in zip(columns, row)))
+    return "\n".join(lines)
+
+
+# Order questions: Claude writes SQL, search/orders.py decides whether it may
+# run and against which rows, and the answer is written from the result plus
+# the policy passage that explains it. Same entry-point rules as
+# answer_question: length cap, typed API errors, redaction, one log line.
+def answer_order_question(question, role, rag_chain=None, access_check=None, log_context=None):
+    from search import orders
+
+    start = time.time()
+    log_context = log_context or {}
+    timer = tracing.StepTimer()
+    out = {"answer": "", "sql": None, "columns": [], "rows": [], "hidden": [], "why": None, "guardrail": None}
+
+    def finish(guardrail, usage=None, **fields):
+        out.update(fields, guardrail=guardrail)
+        log_event({
+            "event": "order_question", "question_len": len(question), "role": role,
+            # The SQL and a row count, never the rows: this log isn't access-controlled.
+            "sql": out["sql"], "num_rows": len(out["rows"]), "guardrail": guardrail,
+            "why_source": (out["why"] or {}).get("source"),
+            **timer.steps, "latency_ms": round((time.time() - start) * 1000),
+            **(usage or {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "models_called": []}),
+            **log_context,
+        })
+        return out
+
+    if len(question) > MAX_QUESTION_LENGTH:
+        return finish("input_too_long", answer=f"Question is too long ({len(question)} characters, max {MAX_QUESTION_LENGTH}).")
+    if not llm_enabled():
+        return finish("offline", answer="Order questions need the Claude API in this app. The browser demo "
+                                        "answers them offline with a fixed set of query types.")
+
+    connection = orders.connect(orders.ensure_db(ORDERS_DB))
+    try:
+        access = orders.apply_role(connection, role)
+        if access["denied"]:
+            return finish("orders_denied", answer="Your role has no access to order data.")
+        llm = ChatAnthropic(model=MODEL, max_tokens=1024)
+        with get_usage_metadata_callback() as usage_cb:
+            usage = lambda: summarize_usage(usage_cb.usage_metadata)  # noqa: E731
+            try:
+                with timer.step("sql_generate"):
+                    spec = orders.generate(llm, connection, question)
+                if not spec.answerable:
+                    return finish("not_an_order_question", usage(),
+                                  answer=spec.clarification or "That isn't something the orders database can answer.")
+                out["sql"] = orders.guard(spec.query)
+                with timer.step("sql_run"):
+                    columns, rows = orders.run(connection, out["sql"])
+                hidden = access["hidden"] | ({"line_total"} if "unit_price" in access["hidden"] else set())
+
+                why = None
+                why_q = orders.why_query(columns, rows, orders.today(connection))
+                if why_q and rag_chain is not None:
+                    with timer.step("why"):
+                        retriever = rag_chain.history_aware_retriever
+                        docs = retriever.retrieve(why_q) if hasattr(retriever, "retrieve") else retriever.invoke(
+                            {"input": why_q, "chat_history": []})
+                        docs = _refine(rag_chain, why_q, docs, access_check, None, timer, None) or []
+                    if docs:
+                        why = {"source": docs[0].metadata.get("source"),
+                               "text": re.sub(r"^Section: .*\n", "", docs[0].page_content)}
+
+                with timer.step("generate"):
+                    reply = llm.invoke(ORDER_ANSWER_PROMPT.format(
+                        question=question, count=len(rows), table=_rows_as_text(columns, rows, hidden),
+                        passage=f"\nPolicy passage ({why['source']}):\n{why['text']}" if why else ""))
+            except orders.GuardError as e:
+                return finish(f"sql_rejected:{e}", usage(),
+                              answer="That question produced a query this assistant won't run. Try asking it differently.")
+            except _API_ERRORS as e:
+                message, tag = _api_error_message(e)
+                return finish(tag, usage(), answer=message)
+            text = reply.content if isinstance(reply.content, str) else "".join(
+                part.get("text", "") for part in reply.content if isinstance(part, dict))
+            answer, redacted = redact_secrets(text)
+            return finish("secret_redacted" if redacted else None, usage(), answer=answer,
+                          columns=columns, rows=rows, hidden=sorted(hidden), why=why)
+    finally:
+        connection.close()
 
 
 # Drop retrieved chunks whose source file this user cannot open on the NAS.

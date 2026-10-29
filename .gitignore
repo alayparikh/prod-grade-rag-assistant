@@ -29,3 +29,6 @@ demo_index/
 demo/golden.json
 demo/.node/
 demo/web/index.json
+
+/brag-output/
+demo/web/orders.db

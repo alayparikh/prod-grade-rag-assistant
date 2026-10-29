@@ -130,3 +130,102 @@
   category: find-file
   question: "the onboarding guide"
   expect_file_any: ["onboarding_guide"]
+
+# ---- documents about Acme's business ----------------------------------------
+- id: docs-hold-reason
+  category: facts
+  question: "What does an address verification hold mean?"
+  expect_answer_contains_any: ["delivery address could not be confirmed"]
+
+- id: docs-warranty
+  category: facts
+  question: "How long is the warranty on a Pallet-runner?"
+  expect_answer_contains_any: ["24 months"]
+
+# ---- orders: questions answered from the orders database ----------------------
+# mode: orders runs through the translator and SQL, not document search. The
+# browser translator is checked by demo/check_search.mjs on every deploy; the
+# Claude path in the Python app is checked by `run_eval.py --live`.
+# expect_values: some row must have these column values.
+- id: orders-status-held
+  mode: orders
+  question: "Why is order 1042 late?"
+  expect_values: {status: on_hold, hold_reason: address_verification}
+  expect_why_contains: "delivery address could not be confirmed"
+
+- id: orders-status-paraphrase
+  mode: orders
+  question: "where's my order 1043"
+  expect_values: {status: shipped}
+
+- id: orders-tracking
+  mode: orders
+  question: "Track order 1043"
+  expect_rows: 4
+  expect_values: {event: shipped}
+
+- id: orders-items
+  mode: orders
+  question: "What's in order 1048?"
+  expect_rows: 2
+  expect_values: {sku: PR-900}
+
+- id: orders-late
+  mode: orders
+  question: "Which orders are late?"
+  expect_rows: 6
+
+- id: orders-on-hold
+  mode: orders
+  question: "Which orders are on hold?"
+  expect_rows: 5
+
+- id: orders-customer
+  mode: orders
+  question: "Show orders for Juniper Fulfillment"
+  expect_values: {id: 1043}
+
+- id: orders-count-by-status
+  mode: orders
+  question: "How many orders are in each status?"
+  expect_values: {status: delivered, orders: 55}
+
+- id: orders-shipped-last-week
+  mode: orders
+  question: "What shipped last week?"
+  expect_rows: 7
+
+- id: orders-needs-order-number
+  mode: orders
+  question: "Where is my order?"
+  expect_missing: order
+
+- id: orders-not-a-query
+  mode: orders
+  question: "What is the capital of Portugal?"
+  expect_no_query: true
+
+# Permissions: the role's views decide, whatever the question.
+- id: orders-contractor-west-only
+  mode: orders
+  role: contractor
+  question: "Which orders are on hold?"
+  expect_rows: 2
+
+- id: orders-contractor-other-region
+  mode: orders
+  role: contractor
+  question: "What's the status of order 1043?"
+  expect_rows: 0
+
+- id: orders-engineer-prices-hidden
+  mode: orders
+  role: engineer
+  question: "What's in order 1048?"
+  expect_values: {sku: PR-900, unit_price: null}
+
+- id: orders-hr-denied
+  mode: orders
+  role: hr
+  question: "Which orders are late?"
+  expect_denied: true

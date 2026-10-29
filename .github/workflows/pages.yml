@@ -50,8 +50,8 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Install Transformers.js for the check
-        run: npm install --prefix demo/.node @huggingface/transformers@3.7.1
+      - name: Install Transformers.js and sql.js for the check
+        run: npm install --prefix demo/.node @huggingface/transformers@3.7.1 sql.js@1.15.2
 
       # The query half runs in JavaScript. This runs the golden set through
       # that code, so a drift from the Python pipeline fails the deploy.

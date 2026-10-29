@@ -121,6 +121,10 @@ def run_retrieval_only(items, vectorstore, use_rerank=True):
             status, reason = run_find_file(item)
             results.append((item["id"], status, reason))
             continue
+        if item.get("mode") == "orders":
+            results.append((item["id"], "SKIP", "needs --live (Claude path); the browser translator "
+                                                "is checked by demo/check_search.mjs"))
+            continue
         if item.get("category") in ("multi-turn", "safety") or item.get("expect_refusal"):
             results.append((item["id"], "SKIP", "needs --live"))
             continue
@@ -174,6 +178,37 @@ def _grade(result_id, expectations, response, judge=None):
     return result_id, "PASS" if ok else "FAIL", reason
 
 
+# Order cases through the Claude path. Same expectations as the browser
+# translator's check, so the two implementations answer the same questions.
+def run_order_case(item, chain):
+    result = rag.answer_order_question(item["question"], item.get("role", "admin"), rag_chain=chain,
+                                       log_context={"mode": "eval"})
+    guardrail = result["guardrail"] or ""
+    if guardrail.startswith("api_error"):
+        return item["id"], "ERROR", guardrail
+    if item.get("expect_denied"):
+        ok = guardrail == "orders_denied"
+        return item["id"], "PASS" if ok else "FAIL", "" if ok else f"expected denial, got {guardrail or 'an answer'}"
+    if item.get("expect_no_query") or item.get("expect_missing"):
+        ok = result["sql"] is None
+        return item["id"], "PASS" if ok else "FAIL", "" if ok else f"expected no query, ran: {result['sql']}"
+    if guardrail and guardrail != "secret_redacted":
+        return item["id"], "FAIL", guardrail
+    rows = [dict(zip(result["columns"], r)) for r in result["rows"]]
+    if "expect_rows" in item and len(rows) != item["expect_rows"]:
+        return item["id"], "FAIL", f"expected {item['expect_rows']} rows, got {len(rows)}: {result['sql']}"
+    # Claude names its own columns (order_id vs id, order_count vs orders), so a
+    # row matches when it holds the expected values; an expected null (a hidden
+    # column) still has to be that exact column.
+    want = item.get("expect_values")
+    matches = lambda row, k, v: row.get(k) is None if v is None else v in row.values()  # noqa: E731
+    if want and not any(all(matches(row, k, v) for k, v in want.items()) for row in rows):
+        return item["id"], "FAIL", f"no row with {want}: {result['sql']}"
+    if item.get("expect_why_contains") and item["expect_why_contains"].lower() not in (result["why"] or {}).get("text", "").lower():
+        return item["id"], "FAIL", "the policy passage didn't explain the hold"
+    return item["id"], "PASS", ""
+
+
 def run_live(items, vectorstore, use_judge=True):
     # No answer cache: a cached answer would hide the regression under test.
     chain = rag.build_chain(vectorstore, use_cache=False)
@@ -183,6 +218,9 @@ def run_live(items, vectorstore, use_judge=True):
         if item.get("mode") == "find_file":
             status, reason = run_find_file(item)
             results.append((item["id"], status, reason))
+            continue
+        if item.get("mode") == "orders":
+            results.append(run_order_case(item, chain))
             continue
         if "turns" in item:
             history = []
