@@ -32,3 +32,6 @@ demo/web/index.json
 
 /brag-output/
 demo/web/orders.db
+
+# Private interview prep
+INTERVIEW_NOTES.md

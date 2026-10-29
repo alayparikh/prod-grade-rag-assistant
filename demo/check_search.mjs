@@ -8,7 +8,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { Engine } from "./web/search.js";
-import { Translator, applyRole, loadContext, run } from "./web/orders.js";
+import { Translator, applyRole, loadContext, run, summarize } from "./web/orders.js";
 
 const require = createRequire(new URL("./.node/", import.meta.url));
 // Node resolves the package's CommonJS build; its exports sit on `default`.
@@ -51,13 +51,20 @@ async function checkOrders(item) {
     return [false, `${t.intent.id}: expected ${item.expect_rows} rows, got ${rows.length}`];
   if (item.expect_values && !rows.some((row) => Object.entries(item.expect_values).every(([k, v]) => row[k] === v)))
     return [false, `${t.intent.id}: no row with ${JSON.stringify(item.expect_values)}`];
+  const sentence = summarize(t, res, octx, access.hidden);
+  for (const phrase of item.expect_summary_contains ?? []) {
+    if (!sentence.includes(phrase)) return [false, `answer "${sentence}" lacks "${phrase}"`];
+  }
+  for (const phrase of item.expect_summary_not_contains ?? []) {
+    if (sentence.includes(phrase)) return [false, `answer "${sentence}" leaks "${phrase}"`];
+  }
   if (item.expect_why_contains) {
     const reason = rows[0]?.hold_reason;
     const why = reason ? (await engine.search(`${reason.replace(/_/g, " ")} hold`)).passages[0] : null;
     if (!why?.chunk.text.toLowerCase().includes(item.expect_why_contains.toLowerCase()))
       return [false, `the policy passage for ${reason} didn't contain "${item.expect_why_contains}"`];
   }
-  return [true, `${t.intent.id} → ${rows.length} rows`];
+  return [true, `${t.intent.id} → ${rows.length} rows · "${sentence.slice(0, 70)}"`];
 }
 
 let failed = 0, checked = 0;

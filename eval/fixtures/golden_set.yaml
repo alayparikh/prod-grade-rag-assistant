@@ -147,11 +147,14 @@
 # browser translator is checked by demo/check_search.mjs on every deploy; the
 # Claude path in the Python app is checked by `run_eval.py --live`.
 # expect_values: some row must have these column values.
+# expect_summary_contains: phrases the plain-English answer must include
+# (browser demo only; the Python app's answer is written by Claude).
 - id: orders-status-held
   mode: orders
   question: "Why is order 1042 late?"
   expect_values: {status: on_hold, hold_reason: address_verification}
   expect_why_contains: "delivery address could not be confirmed"
+  expect_summary_contains: ["on hold for address verification", "7 days late"]
 
 - id: orders-status-paraphrase
   mode: orders
@@ -169,11 +172,13 @@
   question: "What's in order 1048?"
   expect_rows: 2
   expect_values: {sku: PR-900}
+  expect_summary_contains: ["1 × PR-900 Heavy Runner", "$240,000 in total"]
 
 - id: orders-late
   mode: orders
   question: "Which orders are late?"
   expect_rows: 6
+  expect_summary_contains: ["6 orders are late right now"]
 
 - id: orders-on-hold
   mode: orders
@@ -223,6 +228,9 @@
   role: engineer
   question: "What's in order 1048?"
   expect_values: {sku: PR-900, unit_price: null}
+  # The sentence must not leak what the table hides.
+  expect_summary_contains: ["Prices are hidden for your role"]
+  expect_summary_not_contains: ["$"]
 
 - id: orders-hr-denied
   mode: orders

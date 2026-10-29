@@ -78,7 +78,10 @@ nine query types by meaning (the same embedding model the document search
 loads), pulls out the order number, customer, status and dates, and fills in
 a **parameterized** SQL template. Nothing typed ever becomes SQL text.
 
-- It shows the SQL and its parameters before the result.
+- It leads with the answer as a sentence, written from the result rows by a
+  per-query-type summarizer (so it can't say anything the query didn't return,
+  and it says "prices are hidden" rather than leaking a total). The rows, the
+  policy passage, and the SQL with its parameters sit below as evidence.
 - Below a similarity of 0.45 it says it can't turn the question into a query
   instead of guessing (paraphrased order questions scored 0.51+, document and
   off-topic questions at most 0.36).

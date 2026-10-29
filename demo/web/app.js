@@ -8,7 +8,7 @@
 //   - startup: index, models, sql.js and orders.db all load before the
 //     privacy meter starts counting, so searching adds zero requests.
 import { Engine, tokenize } from "./search.js";
-import { INTENTS, Translator, applyRole, loadContext, run } from "./orders.js";
+import { INTENTS, Translator, applyRole, loadContext, run, summarize } from "./orders.js";
 
 const SQLJS = "https://cdn.jsdelivr.net/npm/sql.js@1.15.2/dist/";
 
@@ -376,7 +376,7 @@ function table(res, hidden) {
 function oxray(t, res, access) {
   const slot = (name, v) => `<li class="chip${v ? " answer" : ""}"><i>${name}</i><span>${v ? escape(v) : "—"}</span></li>`;
   const p = t.slots.period;
-  return `<details class="xray" open><summary>Query X-ray<small>how the question became SQL</small></summary>
+  return `<details class="xray"><summary>Query X-ray<small>how the question became SQL</small></summary>
     <div class="lanes olanes">
       <div class="lane meaning"><h4>Query type, by meaning</h4><ol>${t.ranked.slice(0, 4).map(([intent, score], i) =>
         `<li class="chip${i === 0 && t.intent ? " answer" : ""}"><i>${i + 1}</i><span>${escape(intent.label)}</span><em>${score.toFixed(2)}</em></li>`).join("")}</ol></div>
@@ -433,9 +433,13 @@ async function askOrders(question, k = null) {
     const explain = k ? `<div class="explain"><b>What just happened</b>${k.explain({ docsOnly, row, why }).map((x) => `<p>${x}</p>`).join("")}</div>` : "";
     const whyHtml = why ? `<aside class="why"><b>Why · from ${escape(why.chunk.source)}</b>
       <p>${escape(why.chunk.text.replace(/^Section: .*\n/, ""))}</p></aside>` : "";
-    oresults.innerHTML = explain + head +
-      `<div class="sqlblock"><pre><code>${sqlHtml(t.sql, t.params)}</code></pre><p class="params">${params || "no parameters"} · runs against your role's views</p></div>` +
-      `<div class="answer-grid${why ? " with-why" : ""}">${table(res, access.hidden)}${whyHtml}</div>` + oxray(t, res, access);
+    // The answer first; the rows, the policy and the SQL below it as evidence.
+    const sentence = `<p class="oanswer">${escape(summarize(t, res, octx, access.hidden))}</p>`;
+    const sqlHtmlBlock = `<details class="xray sqlwrap"><summary>Show the SQL<small>what ran, with its values</small></summary>
+      <div class="sqlblock"><pre><code>${sqlHtml(t.sql, t.params)}</code></pre><p class="params">${params || "no parameters"} · runs against your role's views</p></div></details>`;
+    oresults.innerHTML = explain + sentence +
+      `<div class="answer-grid${why ? " with-why" : ""}">${table(res, access.hidden)}${whyHtml}</div>` +
+      head + sqlHtmlBlock + oxray(t, res, access);
   } catch (e) {
     oresults.innerHTML = `<div class="empty"><h3>The query failed</h3><p>${escape(e.message)}. Reload the page to try again.</p></div>`;
   } finally {

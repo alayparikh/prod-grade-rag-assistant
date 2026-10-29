@@ -250,3 +250,87 @@ export function loadContext(db) {
   const today = run(db, "SELECT value FROM meta WHERE key = 'today'", {}).rows[0][0];
   return { customers, today };
 }
+
+// ---- the answer, in a sentence ------------------------------------------------
+// The page leads with this; the SQL and rows sit below as evidence. Written
+// from the result rows only (there's no language model), so it can't say
+// anything the query didn't return. Hidden columns stay hidden here too.
+const STATUS_TEXT = {
+  placed: "has been placed and is waiting to be picked",
+  picking: "is being picked and configured at the warehouse",
+  shipped: "has shipped",
+  delivered: "was delivered",
+  on_hold: "is on hold",
+  cancelled: "was cancelled",
+  returned: "was returned",
+};
+const human = (s) => String(s).replace(/_/g, " ");
+const daysBetween = (a, b) => Math.round((new Date(`${b}T00:00:00Z`) - new Date(`${a}T00:00:00Z`)) / 86400000);
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const money = (n) => `$${Number(n).toLocaleString("en-US")}`;
+
+export function summarize(t, res, ctx, hidden = new Set()) {
+  const rows = res.rows.map((r) => Object.fromEntries(res.columns.map((c, i) => [c, r[i]])));
+  const s = t.slots;
+  switch (t.intent.id) {
+    case "order_status": {
+      const o = rows[0];
+      if (!o) return `There's no order ${s.order} among the orders you can see.`;
+      let text = `Order ${o.id} for ${o.customer} ${STATUS_TEXT[o.status] ?? human(o.status)}`;
+      if (o.status === "on_hold" && o.hold_reason) text += ` for ${human(o.hold_reason)}`;
+      if (o.status === "shipped" && o.carrier) text += ` with ${o.carrier}${o.tracking_no ? ` (tracking ${o.tracking_no})` : ""}`;
+      if (o.delivered_at) text += ` on ${o.delivered_at}`;
+      text += ".";
+      if (!o.delivered_at && !["cancelled", "returned"].includes(o.status) && o.promised_by < ctx.today) {
+        text += ` It's ${plural(daysBetween(o.promised_by, ctx.today), "day")} late: it was promised by ${o.promised_by}.`;
+      } else if (o.delivered_at && o.delivered_at > o.promised_by) {
+        text += ` That was ${plural(daysBetween(o.promised_by, o.delivered_at), "day")} after the promised ${o.promised_by}.`;
+      } else if (!o.delivered_at && !["cancelled", "returned"].includes(o.status)) {
+        text += ` It's promised by ${o.promised_by}.`;
+      }
+      return text;
+    }
+    case "tracking": {
+      if (!rows.length) return `There's no tracking history for order ${s.order} among the orders you can see.`;
+      const last = rows[rows.length - 1];
+      return `Order ${s.order}'s latest event is ${human(last.event)} on ${last.at} (${last.location}), after ${plural(rows.length - 1, "earlier event")}.`;
+    }
+    case "order_items": {
+      if (!rows.length) return `There's no order ${s.order} among the orders you can see.`;
+      const lines = rows.map((r) => `${r.qty} × ${r.model}`).join(" and ");
+      const total = rows.reduce((sum, r) => sum + (r.line_total ?? 0), 0);
+      return `Order ${s.order} contains ${lines}` +
+        (hidden.has("line_total") ? ". Prices are hidden for your role." : `, ${money(total)} in total.`);
+    }
+    case "customer_orders": {
+      const open = rows.filter((r) => !["delivered", "cancelled", "returned"].includes(r.status));
+      if (!rows.length) return `${s.customer.name} has no orders you can see.`;
+      const ids = open.slice(0, 3).map((r) => `${r.id} (${human(r.status)})`).join(", ");
+      return `${s.customer.name} has ${plural(rows.length, "order")}; ` +
+        (open.length ? `${open.length} still open: ${ids}${open.length > 3 ? ", …" : ""}.` : "none are still open.");
+    }
+    case "late_orders": {
+      if (!rows.length) return "No orders are late right now.";
+      const worst = rows[0];
+      return `${plural(rows.length, "order")} ${rows.length === 1 ? "is" : "are"} late right now. The most overdue is ${worst.id} for ${worst.customer}, ` +
+        `${plural(daysBetween(worst.promised_by, ctx.today), "day")} past its ${worst.promised_by} promise.`;
+    }
+    case "on_hold": {
+      if (!rows.length) return "No orders are on hold.";
+      const reasons = [...new Set(rows.map((r) => human(r.hold_reason)))].join(", ");
+      return `${plural(rows.length, "order")} ${rows.length === 1 ? "is" : "are"} on hold, for: ${reasons}.`;
+    }
+    case "by_status":
+      return rows.length ? `${plural(rows.length, "order")} ${rows.length === 1 ? "is" : "are"} ${human(s.status)}${rows.length ? `; the newest is ${rows[0].id} for ${rows[0].customer}` : ""}.`
+        : `No orders are ${human(s.status)}.`;
+    case "count_by_status": {
+      const total = rows.reduce((sum, r) => sum + r.orders, 0);
+      return `There are ${plural(total, "order")}: ${rows.map((r) => `${r.orders} ${human(r.status)}`).join(", ")}.`;
+    }
+    case "shipped_between":
+      return rows.length ? `${plural(rows.length, "order")} shipped ${s.period.label} (${s.period.from} to ${s.period.to}).`
+        : `Nothing shipped ${s.period.label} (${s.period.from} to ${s.period.to}).`;
+    default:
+      return `${plural(rows.length, "row")} matched.`;
+  }
+}
