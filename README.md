@@ -4,45 +4,6 @@ Chat with your own PDFs/Word/text files. Embedding, keyword search and reranking
 
 **[▶ Try the live demo](https://alayparikh.github.io/prod-grade-rag-assistant/)**: a fictional company's handbook, runbooks and resumes, searched entirely in your browser (no server, no AI calls, no sign-in). How it works: [demo/README.md](demo/README.md).
 
-## Try it locally (no API key needed)
-
-Without `ANTHROPIC_API_KEY` the app runs in offline mode: answers are the best-matching passages, and nothing calls an API.
-
-```bash
-RAG_AUTH_MODE=none RAG_DOCS_PATH=./eval/fixtures/docs RAG_PERSIST_PATH=./demo_index python -m indexer
-RAG_DEMO=1 RAG_AUTH_MODE=none RAG_DOCS_PATH=./eval/fixtures/docs RAG_PERSIST_PATH=./demo_index streamlit run app.py
-```
-
-The hosted demo is a static page built by [`.github/workflows/pages.yml`](.github/workflows/pages.yml); see [demo/README.md](demo/README.md).
-
-## Setup
-
-```bash
-python3 -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-Create `.env` in the project root:
-
-```
-ANTHROPIC_API_KEY=your-key-here
-```
-
-Get a key at https://console.anthropic.com/. `.env` is git-ignored — never commit it.
-
-## Run
-
-Drop `.pdf`, `.docx`, `.txt`, or `.md` files into `docs/` (auto-created on first run), then:
-
-```bash
-python rag.py                   # web chat UI at localhost:8501
-python rag.py --cli             # terminal chat instead
-python rag.py --cli --reindex   # force a full rebuild of the index
-```
-
-First run embeds everything into `chroma_db/`. Later runs only re-embed files that are **new or changed**. To pick up edited files, run `python -m indexer` (or restart the app, which syncs on start); in a deployment the indexer does this nightly.
-
 ## Architecture
 
 **Ingest** (local, no API calls):
@@ -94,19 +55,6 @@ question → answer_question()          ← every guardrail lives here
 
 **Notable implementation details:** `.docx` hyperlinks are recovered from the document's relationship table (plain-text extraction drops the URL and keeps only anchor text like "LinkedIn"). BM25 uses a custom regex tokenizer — the default splits on whitespace, making a whole URL one unmatchable token.
 
-## Configuration
-
-| What | Where |
-|---|---|
-| `ANTHROPIC_API_KEY` | `.env` — optional; without it the app runs offline |
-| `RAG_LLM` | `auto` (default: Claude if a key is set), `off` (never calls an API, even with a key; use on public instances), `anthropic` |
-| Your documents | `docs/` |
-| `MODEL` | `rag.py` — defaults to `claude-sonnet-5` |
-| `EMBEDDING_MODEL` | `rag.py` — defaults to `all-MiniLM-L6-v2` (small, no GPU) |
-| Rerank, grading, cache, tracing, index health | env vars — see `.env.example` |
-
-Every question's event-log line carries per-step timings (`retrieve_ms`, `rerank_ms`, `grade_ms`, `generate_ms`), `cache` hit/miss and whether the rewrite-retry fired. Changing `pipeline/chunking.py` requires bumping `CHUNKER_VERSION`, which re-embeds every file on the next index run.
-
 ## Guardrails
 
 All enforced inside `answer_question()`:
@@ -148,48 +96,9 @@ up/down are logged the same way, with the username and never the password.
 
 `eval/golden_set.yaml` holds test questions grounded in your actual `docs/` content — fact lookups, out-of-scope negatives (should refuse), a multi-turn follow-up, and a prompt-injection attempt. Git-ignored; `eval/golden_set.example.yaml` is the schema template.
 
-```bash
-python -m pytest tests/ -q       # unit tests, fast, no API
-python eval/run_eval.py          # retrieval-only, free — checks the right chunks were found
-python eval/run_eval.py --live   # real API calls — checks generated answers
-```
-
 The retrieval-only run checks the reranked top 10, which is what the model actually sees. `--live` additionally verifies refusal and injection resistance, and an LLM judge fails any answer making a claim the retrieved text doesn't support (`--no-judge` to skip); it runs with the answer cache off so a cached answer can't hide a regression. An `ERROR` (vs. `FAIL`) means the API call itself failed, not a quality regression. Update the golden set when you change `docs/` — a stale one gives false failures and false passes.
 
 **Why both tests and evals.** A hybrid retriever is deliberately redundant: when BM25 degrades, vector search often still surfaces the right chunk. That's good for users and bad for detection — a deliberately broken `_tokenize()` was measured passing the full retrieval eval while `tests/test_units.py` caught it immediately. Evals cover the pipeline end to end; unit tests guard the components the pipeline can mask.
-
-### CI
-
-`.github/workflows/ci.yml` runs unit tests + the retrieval eval on every push and PR — no API key, no cost. It runs against the committed synthetic corpus in `eval/fixtures/` (not `docs/`, which is git-ignored), driven by the `RAG_DOCS_PATH` / `RAG_PERSIST_PATH` / `RAG_LOG_PATH` env overrides. The `--live` eval is a manual `workflow_dispatch` job, since it costs money and needs `ANTHROPIC_API_KEY` in repo secrets.
-
-`.github/workflows/pages.yml` builds and publishes the in-browser demo. It runs the golden set through the demo's JavaScript search code (`demo/check_search.mjs`) and refuses to deploy if that copy of the query pipeline has drifted from the Python one.
-
-The fixture corpus (18 documents, 55 chunks, plus an 80-order database) is deliberately competing content, because a corpus where every query retrieves everything gives an eval that can't fail. See [eval/fixtures/README.md](eval/fixtures/README.md).
-
-## NAS deployment
-
-**Step-by-step Synology instructions are in [DEPLOY.md](DEPLOY.md).** This
-section covers how it works; that one covers what to type.
-
-Runs on a host on the LAN beside the NAS, or on the NAS itself, indexing a
-read-only mount of the share.
-
-```
-NAS  --(SMB, read-only, service account)-->  /mnt/nas  -->  indexer (nightly cron)
-NAS  <--(SMB, each user's own credentials)--  app      <--  browser (TLS)
-```
-
-Set `RAG_DOCS_PATH=/mnt/nas`, `RAG_NAS_HOST`, and `RAG_NAS_SHARE`, then:
-
-```bash
-python -m indexer --census   # file counts per type; decides OCR scope before indexing 50 GB
-python -m indexer            # census + content index (nightly cron target)
-python -m indexer --reindex  # rebuild the vector store from scratch
-```
-
-The indexer is a separate entrypoint from the app on purpose: walking the
-share must not depend on anyone having a browser tab open, and the app must
-not need a writable mount.
 
 ### Authorization comes from the NAS
 
@@ -215,42 +124,6 @@ everything don't pay for triple the prompt. A fully-filtered result returns
 the same wording as an empty one — a refusal must not reveal that a
 document exists.
 
-| Env | Purpose |
-|---|---|
-| `RAG_NAS_HOST` / `RAG_NAS_SHARE` | NAS to authenticate and check files against |
-| `RAG_DOCS_PATH` | Read-only mount of that share (default `/mnt/nas`) |
-| `RAG_SESSION_IDLE_MIN` | Idle minutes before a login expires (default 30) |
-| `RAG_AUTH_MODE=none` | Local development only — no login, no access checks |
-| `RAG_META_DB` | File catalogue (default `<persist>/meta.sqlite`) |
-| `RAG_EXCLUDE_GLOBS` | Extra directory/file globs to skip while crawling |
-| `RAG_ORDERS_DB` / `RAG_ORDER_GROUP_ROLES` | Orders database and group → order-role mapping (see `.env.example`) |
-
-### Deploying
-
-```bash
-docker compose up -d --build                      # separate Linux host
-docker compose up -d --build app indexer          # on a Synology, DSM owns 443
-```
-
-`app` serves the UI, `indexer` re-indexes nightly at `RAG_INDEX_AT`, and
-`caddy` terminates TLS. Both have healthchecks: `app` probes Streamlit, and
-`indexer` turns unhealthy when the last successful run is older than
-`RAG_INDEX_MAX_AGE_HOURS` (36h), so a stalled nightly job shows in `docker ps`
-instead of as stale answers. The app also warns users when the index is stale. On a Synology, leave Caddy out and use DSM's own
-reverse proxy — DSM already owns ports 80 and 443. See
-[DEPLOY.md](DEPLOY.md). Both Python services mount the share read-only, so a bug here cannot
-write to the NAS even if the service account is later over-granted. The
-index lives in a named volume — back that up and test a restore, because
-rebuilding it from 50 GB is hours of OCR and embedding.
-
-**Not yet exercised on real hardware.** The container files, the ACL
-tagging in `indexer/acl.py`, and the LDAP group lookup are written and
-unit-tested but have never run against an actual NAS. Confirm on site
-that the device answers a security-descriptor query and that group
-membership resolves before turning `RAG_ACL_TAGGING` on. Until then the
-query-time check stands alone, which is correct but slower for users with
-narrow access.
-
 ### Three modes
 
 **Ask about orders** answers plain-English order questions from the orders
@@ -273,4 +146,3 @@ NAS paths so people can go open the file.
 
 - Indexing and retrieval are fully local — no API cost, no network call.
 - Corpus size doesn't change per-question cost much: retrieval is always top-k, and k grows only slowly with the corpus. Cost scales mainly with query volume and conversation length.
-- `venv/`, `chroma_db/`, `docs/`, `.env`, `users.yaml`, `logs/`, and `eval/golden_set.yaml` are git-ignored — a fresh clone starts clean.
