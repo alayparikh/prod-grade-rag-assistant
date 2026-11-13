@@ -190,6 +190,30 @@ export function extractSlots(question, { customers, today }) {
   };
 }
 
+// "My orders", "our order": orders belong to customers, and the person asking
+// is staff, so "my" names no customer and no order. Without an order number or
+// a customer name the data can't answer it, whichever query type it reads most
+// like ("where are my orders?" is close to "which orders are on hold?"), so it
+// becomes a request for the missing detail instead of a confident wrong list.
+const MINE = /\b(my|our)\b[^.?!]*\borders?\b/i;
+
+// What to ask when a query type is missing a value it needs.
+const ASK_FOR = {
+  order: "Which order? Add the order number, like 1042.",
+  customer: "Which customer? Name them, like Juniper Fulfillment.",
+  status: "Which status? For example shipped, picking, delivered or cancelled.",
+  period: "When? For example last week, this week or October.",
+};
+const ASK_WHOSE = "Which customer's orders? Orders belong to customers, not to whoever signs in, " +
+  "so name the customer, like Cobalt Bay Distribution, or give an order number, like 1042.";
+
+// One wording for the Orders section and the agent section, so a question gets
+// the same reply in both.
+export function clarifyingQuestion(t) {
+  const slot = t.missing[0];
+  return t.mine && slot === "customer" ? ASK_WHOSE : ASK_FOR[slot];
+}
+
 // ---- translation ---------------------------------------------------------------
 export class Translator {
   constructor(embed) {
@@ -222,6 +246,13 @@ export class Translator {
       best.set(ex.intent, Math.max(best.get(ex.intent) ?? -1, dot(ex.v)));
     }
     const ranked = [...best.entries()].sort((a, b) => b[1] - a[1]);
+    // "My order" asks about one order, "my orders" about a customer's orders;
+    // either way the value that would say whose is missing.
+    if (MINE.test(question) && !slots.order && !slots.customer) {
+      const slot = /\borders\b/i.test(question) ? "customer" : "order";
+      const [mine, mineScore] = ranked.find(([i]) => i.needs?.includes(slot));
+      return { intent: mine, score: mineScore, slots, ranked, missing: [slot], mine: true, sql: mine.sql, params: {} };
+    }
     const [intent, score] = ranked[0] ?? [null, 0];
     if (!intent || score < MIN_INTENT_SCORE) return { intent: null, score, slots, ranked };
 

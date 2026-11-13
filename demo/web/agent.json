@@ -1,0 +1,1505 @@
+{
+ "kind": "example",
+ "made_at": "2026-11-12",
+ "model": null,
+ "cost_usd": null,
+ "fingerprint": "13a2f5fdebbe218237a838dde4ff95701360a6cf2fc21a0d2e9d111bc202c493",
+ "roles": {
+  "admin": {
+   "files": [
+    "alex_chen_resume.txt",
+    "architecture_notes.md",
+    "company_handbook.md",
+    "jane_doe_resume.txt",
+    "onboarding_guide.md",
+    "order_lifecycle.md",
+    "priya_nair_resume.txt",
+    "product_catalog.md",
+    "returns_warranty.md",
+    "runbook_database.md",
+    "runbook_networking.md",
+    "sam_rivera_resume.docx",
+    "security_policy.md",
+    "shipping_policy.md",
+    "support_playbook.md",
+    "team_roster.md",
+    "testing_standards.md",
+    "tom_becker_resume.txt"
+   ]
+  },
+  "engineer": {
+   "files": [
+    "architecture_notes.md",
+    "company_handbook.md",
+    "onboarding_guide.md",
+    "order_lifecycle.md",
+    "product_catalog.md",
+    "returns_warranty.md",
+    "runbook_database.md",
+    "runbook_networking.md",
+    "security_policy.md",
+    "shipping_policy.md",
+    "support_playbook.md",
+    "team_roster.md",
+    "testing_standards.md"
+   ]
+  },
+  "hr": {
+   "files": [
+    "alex_chen_resume.txt",
+    "company_handbook.md",
+    "jane_doe_resume.txt",
+    "onboarding_guide.md",
+    "priya_nair_resume.txt",
+    "sam_rivera_resume.docx",
+    "security_policy.md",
+    "team_roster.md",
+    "tom_becker_resume.txt"
+   ]
+  },
+  "contractor": {
+   "files": [
+    "company_handbook.md",
+    "onboarding_guide.md",
+    "order_lifecycle.md",
+    "product_catalog.md",
+    "shipping_policy.md",
+    "testing_standards.md"
+   ]
+  }
+ },
+ "questions": [
+  {
+   "id": "agent-held-order-action",
+   "question": "Why is order 1042 late, and what should support do about it?",
+   "runs": {
+    "admin": {
+     "answer": "Order 1042 (Cobalt Bay Distribution) is on hold for address verification: the carrier could not confirm the delivery address. It was promised for 2026-10-21, so it is 7 days late.\n\nSupport should ask the customer to confirm the address and a site contact; the hold normally clears within 2 business days of their reply. Don't promise a new delivery date until the hold is cleared.",
+     "sources": [
+      "shipping_policy.md",
+      "support_playbook.md"
+     ],
+     "used_orders": true,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "query_orders",
+       "args": {
+        "sql": "SELECT o.id, c.name AS customer, o.status, o.hold_reason, o.promised_by FROM orders_v o JOIN customers_v c ON c.id = o.customer_id WHERE o.id = 1042"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 6,
+       "at_ms": 6,
+       "detail": {
+        "sql": "SELECT o.id, c.name AS customer, o.status, o.hold_reason, o.promised_by FROM orders_v AS o JOIN customers_v AS c ON c.id = o.customer_id WHERE o.id = 1042 LIMIT 50",
+        "columns": [
+         "id",
+         "customer",
+         "status",
+         "hold_reason",
+         "promised_by"
+        ],
+        "rows": [
+         [
+          1042,
+          "Cobalt Bay Distribution",
+          "on_hold",
+          "address_verification",
+          "2026-10-21"
+         ]
+        ],
+        "hidden": []
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "address verification hold"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 3326,
+       "at_ms": 3332,
+       "detail": {
+        "passages": [
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Hold reasons > address_verification",
+          "text": "The delivery address could not be confirmed by the carrier, usually because the site has a new loading dock or a missing unit number. Support asks the customer to confirm the address and a site contact; the hold is normally cleared within 2 business days of their reply."
+         }
+        ]
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "what support does about a held order"
+       },
+       "ok": true,
+       "count": 5,
+       "ms": 39,
+       "at_ms": 3371,
+       "detail": {
+        "passages": [
+         {
+          "source": "support_playbook.md",
+          "section": "Support Playbook: Order Issues > Held orders",
+          "text": "Look up the order's hold_reason and follow the matching section of the shipping policy. Never promise a new delivery date until the hold is cleared; a hold on credit_check or export_license is outside support's control."
+         },
+         {
+          "source": "order_lifecycle.md",
+          "section": "Order Lifecycle > on_hold",
+          "text": "The order is paused and will not move to the next status until the hold is cleared. Every on_hold order has a hold_reason; the shipping policy describes each reason and how to resolve it. An order on hold past its promised delivery date counts as late."
+         },
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Hold reasons",
+          "text": "When an order is put on hold, it gets exactly one hold_reason. The promised date is not moved automatically."
+         },
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Hold reasons > payment_failed",
+          "text": "The card or bank transfer for the order was declined. The order is held for up to 7 days for the customer to update payment, then cancelled."
+         },
+         {
+          "source": "support_playbook.md",
+          "section": "Support Playbook: Order Issues > Late orders",
+          "text": "When an order passes its promised date without being delivered, support emails the customer the same day with the current status and a new estimate. For Platinum-tier accounts the account manager also calls."
+         }
+        ]
+       }
+      }
+     ],
+     "latency_ms": 3482,
+     "cost_usd": 0.0
+    },
+    "engineer": {
+     "answer": "Order 1042 (Cobalt Bay Distribution) is on hold for address verification: the carrier could not confirm the delivery address. It was promised for 2026-10-21, so it is 7 days late.\n\nSupport should ask the customer to confirm the address and a site contact; the hold normally clears within 2 business days of their reply. Don't promise a new delivery date until the hold is cleared.",
+     "sources": [
+      "shipping_policy.md",
+      "support_playbook.md"
+     ],
+     "used_orders": true,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "query_orders",
+       "args": {
+        "sql": "SELECT o.id, c.name AS customer, o.status, o.hold_reason, o.promised_by FROM orders_v o JOIN customers_v c ON c.id = o.customer_id WHERE o.id = 1042"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 1,
+       "at_ms": 1,
+       "detail": {
+        "sql": "SELECT o.id, c.name AS customer, o.status, o.hold_reason, o.promised_by FROM orders_v AS o JOIN customers_v AS c ON c.id = o.customer_id WHERE o.id = 1042 LIMIT 50",
+        "columns": [
+         "id",
+         "customer",
+         "status",
+         "hold_reason",
+         "promised_by"
+        ],
+        "rows": [
+         [
+          1042,
+          "Cobalt Bay Distribution",
+          "on_hold",
+          "address_verification",
+          "2026-10-21"
+         ]
+        ],
+        "hidden": []
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "address verification hold"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 16,
+       "at_ms": 17,
+       "detail": {
+        "passages": [
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Hold reasons > address_verification",
+          "text": "The delivery address could not be confirmed by the carrier, usually because the site has a new loading dock or a missing unit number. Support asks the customer to confirm the address and a site contact; the hold is normally cleared within 2 business days of their reply."
+         }
+        ]
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "what support does about a held order"
+       },
+       "ok": true,
+       "count": 5,
+       "ms": 23,
+       "at_ms": 40,
+       "detail": {
+        "passages": [
+         {
+          "source": "support_playbook.md",
+          "section": "Support Playbook: Order Issues > Held orders",
+          "text": "Look up the order's hold_reason and follow the matching section of the shipping policy. Never promise a new delivery date until the hold is cleared; a hold on credit_check or export_license is outside support's control."
+         },
+         {
+          "source": "order_lifecycle.md",
+          "section": "Order Lifecycle > on_hold",
+          "text": "The order is paused and will not move to the next status until the hold is cleared. Every on_hold order has a hold_reason; the shipping policy describes each reason and how to resolve it. An order on hold past its promised delivery date counts as late."
+         },
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Hold reasons",
+          "text": "When an order is put on hold, it gets exactly one hold_reason. The promised date is not moved automatically."
+         },
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Hold reasons > payment_failed",
+          "text": "The card or bank transfer for the order was declined. The order is held for up to 7 days for the customer to update payment, then cancelled."
+         },
+         {
+          "source": "support_playbook.md",
+          "section": "Support Playbook: Order Issues > Late orders",
+          "text": "When an order passes its promised date without being delivered, support emails the customer the same day with the current status and a new estimate. For Platinum-tier accounts the account manager also calls."
+         }
+        ]
+       }
+      }
+     ],
+     "latency_ms": 41,
+     "cost_usd": 0.0
+    },
+    "hr": {
+     "answer": "I don't have information on that in the indexed documents.",
+     "sources": [],
+     "used_orders": false,
+     "clarification": false,
+     "guardrail": "no_evidence",
+     "steps": [
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "why order 1042 is late"
+       },
+       "ok": true,
+       "count": 0,
+       "ms": 13,
+       "at_ms": 13,
+       "detail": {
+        "passages": []
+       }
+      }
+     ],
+     "latency_ms": 13,
+     "cost_usd": 0.0
+    },
+    "contractor": {
+     "answer": "Order 1042 (Cobalt Bay Distribution) is on hold for address verification: the carrier could not confirm the delivery address. It was promised for 2026-10-21, so it is 7 days late.\n\nSupport asks the customer to confirm the address and a site contact; the hold normally clears within 2 business days of their reply.",
+     "sources": [
+      "shipping_policy.md"
+     ],
+     "used_orders": true,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "query_orders",
+       "args": {
+        "sql": "SELECT o.id, c.name AS customer, o.status, o.hold_reason, o.promised_by FROM orders_v o JOIN customers_v c ON c.id = o.customer_id WHERE o.id = 1042"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 1,
+       "at_ms": 1,
+       "detail": {
+        "sql": "SELECT o.id, c.name AS customer, o.status, o.hold_reason, o.promised_by FROM orders_v AS o JOIN customers_v AS c ON c.id = o.customer_id WHERE o.id = 1042 LIMIT 50",
+        "columns": [
+         "id",
+         "customer",
+         "status",
+         "hold_reason",
+         "promised_by"
+        ],
+        "rows": [
+         [
+          1042,
+          "Cobalt Bay Distribution",
+          "on_hold",
+          "address_verification",
+          "2026-10-21"
+         ]
+        ],
+        "hidden": []
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "address verification hold"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 17,
+       "at_ms": 18,
+       "detail": {
+        "passages": [
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Hold reasons > address_verification",
+          "text": "The delivery address could not be confirmed by the carrier, usually because the site has a new loading dock or a missing unit number. Support asks the customer to confirm the address and a site contact; the hold is normally cleared within 2 business days of their reply."
+         }
+        ]
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "what support does about a held order"
+       },
+       "ok": true,
+       "count": 3,
+       "ms": 16,
+       "at_ms": 34,
+       "detail": {
+        "passages": [
+         {
+          "source": "order_lifecycle.md",
+          "section": "Order Lifecycle > on_hold",
+          "text": "The order is paused and will not move to the next status until the hold is cleared. Every on_hold order has a hold_reason; the shipping policy describes each reason and how to resolve it. An order on hold past its promised delivery date counts as late."
+         },
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Hold reasons",
+          "text": "When an order is put on hold, it gets exactly one hold_reason. The promised date is not moved automatically."
+         },
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Hold reasons > payment_failed",
+          "text": "The card or bank transfer for the order was declined. The order is held for up to 7 days for the customer to update payment, then cancelled."
+         }
+        ]
+       }
+      }
+     ],
+     "latency_ms": 34,
+     "cost_usd": 0.0
+    }
+   }
+  },
+  {
+   "id": "agent-late-holds-explained",
+   "question": "Which on-hold orders are past their promised date, and what does each hold reason mean?",
+   "runs": {
+    "admin": {
+     "answer": "Two on-hold orders are past their promised date.\n\n**1042**, promised 2026-10-21, is held for address verification: the carrier could not confirm the delivery address. Support asks the customer to confirm it, and the hold normally clears within 2 business days of their reply.\n\n**1044**, promised 2026-10-22, is held for an export licence: EU orders of the PR-900 need one because of its battery capacity. Licences take 5 to 10 business days, and the order ships as soon as one is granted.",
+     "sources": [
+      "shipping_policy.md"
+     ],
+     "used_orders": true,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "query_orders",
+       "args": {
+        "sql": "SELECT id, hold_reason, promised_by FROM orders_v WHERE status = 'on_hold' AND promised_by < '2026-10-28' ORDER BY id"
+       },
+       "ok": true,
+       "count": 2,
+       "ms": 1,
+       "at_ms": 1,
+       "detail": {
+        "sql": "SELECT id, hold_reason, promised_by FROM orders_v WHERE status = 'on_hold' AND promised_by < '2026-10-28' ORDER BY id LIMIT 50",
+        "columns": [
+         "id",
+         "hold_reason",
+         "promised_by"
+        ],
+        "rows": [
+         [
+          1042,
+          "address_verification",
+          "2026-10-21"
+         ],
+         [
+          1044,
+          "export_license",
+          "2026-10-22"
+         ]
+        ],
+        "hidden": []
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "address verification hold"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 17,
+       "at_ms": 17,
+       "detail": {
+        "passages": [
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Hold reasons > address_verification",
+          "text": "The delivery address could not be confirmed by the carrier, usually because the site has a new loading dock or a missing unit number. Support asks the customer to confirm the address and a site contact; the hold is normally cleared within 2 business days of their reply."
+         }
+        ]
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "export licence hold"
+       },
+       "ok": true,
+       "count": 2,
+       "ms": 14,
+       "at_ms": 31,
+       "detail": {
+        "passages": [
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Hold reasons > export_license",
+          "text": "EU orders of the PR-900 need an export licence because of its battery capacity. Licences take 5 to 10 business days to issue, and the order ships as soon as it is granted."
+         },
+         {
+          "source": "support_playbook.md",
+          "section": "Support Playbook: Order Issues > Held orders",
+          "text": "Look up the order's hold_reason and follow the matching section of the shipping policy. Never promise a new delivery date until the hold is cleared; a hold on credit_check or export_license is outside support's control."
+         }
+        ]
+       }
+      }
+     ],
+     "latency_ms": 31,
+     "cost_usd": 0.0
+    },
+    "engineer": {
+     "answer": "Two on-hold orders are past their promised date.\n\n**1042**, promised 2026-10-21, is held for address verification: the carrier could not confirm the delivery address. Support asks the customer to confirm it, and the hold normally clears within 2 business days of their reply.\n\n**1044**, promised 2026-10-22, is held for an export licence: EU orders of the PR-900 need one because of its battery capacity. Licences take 5 to 10 business days, and the order ships as soon as one is granted.",
+     "sources": [
+      "shipping_policy.md"
+     ],
+     "used_orders": true,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "query_orders",
+       "args": {
+        "sql": "SELECT id, hold_reason, promised_by FROM orders_v WHERE status = 'on_hold' AND promised_by < '2026-10-28' ORDER BY id"
+       },
+       "ok": true,
+       "count": 2,
+       "ms": 0,
+       "at_ms": 0,
+       "detail": {
+        "sql": "SELECT id, hold_reason, promised_by FROM orders_v WHERE status = 'on_hold' AND promised_by < '2026-10-28' ORDER BY id LIMIT 50",
+        "columns": [
+         "id",
+         "hold_reason",
+         "promised_by"
+        ],
+        "rows": [
+         [
+          1042,
+          "address_verification",
+          "2026-10-21"
+         ],
+         [
+          1044,
+          "export_license",
+          "2026-10-22"
+         ]
+        ],
+        "hidden": []
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "address verification hold"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 14,
+       "at_ms": 15,
+       "detail": {
+        "passages": [
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Hold reasons > address_verification",
+          "text": "The delivery address could not be confirmed by the carrier, usually because the site has a new loading dock or a missing unit number. Support asks the customer to confirm the address and a site contact; the hold is normally cleared within 2 business days of their reply."
+         }
+        ]
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "export licence hold"
+       },
+       "ok": true,
+       "count": 2,
+       "ms": 14,
+       "at_ms": 28,
+       "detail": {
+        "passages": [
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Hold reasons > export_license",
+          "text": "EU orders of the PR-900 need an export licence because of its battery capacity. Licences take 5 to 10 business days to issue, and the order ships as soon as it is granted."
+         },
+         {
+          "source": "support_playbook.md",
+          "section": "Support Playbook: Order Issues > Held orders",
+          "text": "Look up the order's hold_reason and follow the matching section of the shipping policy. Never promise a new delivery date until the hold is cleared; a hold on credit_check or export_license is outside support's control."
+         }
+        ]
+       }
+      }
+     ],
+     "latency_ms": 29,
+     "cost_usd": 0.0
+    },
+    "hr": {
+     "answer": "I don't have information on that in the indexed documents.",
+     "sources": [],
+     "used_orders": false,
+     "clarification": false,
+     "guardrail": "no_evidence",
+     "steps": [
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "on-hold orders past their promised date"
+       },
+       "ok": true,
+       "count": 0,
+       "ms": 6,
+       "at_ms": 6,
+       "detail": {
+        "passages": []
+       }
+      }
+     ],
+     "latency_ms": 6,
+     "cost_usd": 0.0
+    },
+    "contractor": {
+     "answer": "One on-hold order that you can see is past its promised date.\n\n**1042**, promised 2026-10-21, is held for address verification: the carrier could not confirm the delivery address. Support asks the customer to confirm it, and the hold normally clears within 2 business days of their reply.",
+     "sources": [
+      "shipping_policy.md"
+     ],
+     "used_orders": true,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "query_orders",
+       "args": {
+        "sql": "SELECT id, hold_reason, promised_by FROM orders_v WHERE status = 'on_hold' AND promised_by < '2026-10-28' ORDER BY id"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 0,
+       "at_ms": 1,
+       "detail": {
+        "sql": "SELECT id, hold_reason, promised_by FROM orders_v WHERE status = 'on_hold' AND promised_by < '2026-10-28' ORDER BY id LIMIT 50",
+        "columns": [
+         "id",
+         "hold_reason",
+         "promised_by"
+        ],
+        "rows": [
+         [
+          1042,
+          "address_verification",
+          "2026-10-21"
+         ]
+        ],
+        "hidden": []
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "address verification hold"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 14,
+       "at_ms": 14,
+       "detail": {
+        "passages": [
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Hold reasons > address_verification",
+          "text": "The delivery address could not be confirmed by the carrier, usually because the site has a new loading dock or a missing unit number. Support asks the customer to confirm the address and a site contact; the hold is normally cleared within 2 business days of their reply."
+         }
+        ]
+       }
+      }
+     ],
+     "latency_ms": 15,
+     "cost_usd": 0.0
+    }
+   }
+  },
+  {
+   "id": "agent-warranty-check",
+   "question": "Is order 1074 still under warranty?",
+   "runs": {
+    "admin": {
+     "answer": "Yes. Order 1074 was delivered on 2026-10-23 and is a PR-400 Pallet Runner, which is covered for 24 months from delivery, so the warranty runs until 2028-10-23. Wheels and bumpers are wear parts and are covered for 12 months.",
+     "sources": [
+      "returns_warranty.md"
+     ],
+     "used_orders": true,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "query_orders",
+       "args": {
+        "sql": "SELECT o.id, o.status, o.delivered_at, p.model FROM orders_v o JOIN order_items_v i ON i.order_id = o.id JOIN products_v p ON p.sku = i.sku WHERE o.id = 1074"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 1,
+       "at_ms": 1,
+       "detail": {
+        "sql": "SELECT o.id, o.status, o.delivered_at, p.model FROM orders_v AS o JOIN order_items_v AS i ON i.order_id = o.id JOIN products_v AS p ON p.sku = i.sku WHERE o.id = 1074 LIMIT 50",
+        "columns": [
+         "id",
+         "status",
+         "delivered_at",
+         "model"
+        ],
+        "rows": [
+         [
+          1074,
+          "delivered",
+          "2026-10-23",
+          "PR-400 Pallet Runner"
+         ]
+        ],
+        "hidden": []
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "how long the warranty lasts"
+       },
+       "ok": true,
+       "count": 3,
+       "ms": 18,
+       "at_ms": 19,
+       "detail": {
+        "passages": [
+         {
+          "source": "returns_warranty.md",
+          "section": "Returns and Warranty > Warranty",
+          "text": "Every Pallet-runner is covered for 24 months from delivery against defects in parts and workmanship, including the battery. Wheels and bumpers are wear parts and are covered for 12 months. The warranty does not cover damage from collisions with forklifts or from running outside the rated temperature range."
+         },
+         {
+          "source": "returns_warranty.md",
+          "section": "Returns and Warranty > Repairs",
+          "text": "Warranty repairs are done on site within 5 business days in the West, Central and East regions, and within 10 business days in the EU. Out-of-warranty repairs are quoted before any work starts."
+         },
+         {
+          "source": "returns_warranty.md",
+          "section": "Returns and Warranty > Returns",
+          "text": "Customers can return undamaged robots within 30 days of delivery for a refund minus a 15% restocking fee. Returns need a return authorisation (RMA) number from support before anything is shipped back. Returned orders are given the status returned once the robots arrive back at Acme."
+         }
+        ]
+       }
+      }
+     ],
+     "latency_ms": 19,
+     "cost_usd": 0.0
+    },
+    "engineer": {
+     "answer": "Yes. Order 1074 was delivered on 2026-10-23 and is a PR-400 Pallet Runner, which is covered for 24 months from delivery, so the warranty runs until 2028-10-23. Wheels and bumpers are wear parts and are covered for 12 months.",
+     "sources": [
+      "returns_warranty.md"
+     ],
+     "used_orders": true,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "query_orders",
+       "args": {
+        "sql": "SELECT o.id, o.status, o.delivered_at, p.model FROM orders_v o JOIN order_items_v i ON i.order_id = o.id JOIN products_v p ON p.sku = i.sku WHERE o.id = 1074"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 1,
+       "at_ms": 1,
+       "detail": {
+        "sql": "SELECT o.id, o.status, o.delivered_at, p.model FROM orders_v AS o JOIN order_items_v AS i ON i.order_id = o.id JOIN products_v AS p ON p.sku = i.sku WHERE o.id = 1074 LIMIT 50",
+        "columns": [
+         "id",
+         "status",
+         "delivered_at",
+         "model"
+        ],
+        "rows": [
+         [
+          1074,
+          "delivered",
+          "2026-10-23",
+          "PR-400 Pallet Runner"
+         ]
+        ],
+        "hidden": []
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "how long the warranty lasts"
+       },
+       "ok": true,
+       "count": 3,
+       "ms": 16,
+       "at_ms": 17,
+       "detail": {
+        "passages": [
+         {
+          "source": "returns_warranty.md",
+          "section": "Returns and Warranty > Warranty",
+          "text": "Every Pallet-runner is covered for 24 months from delivery against defects in parts and workmanship, including the battery. Wheels and bumpers are wear parts and are covered for 12 months. The warranty does not cover damage from collisions with forklifts or from running outside the rated temperature range."
+         },
+         {
+          "source": "returns_warranty.md",
+          "section": "Returns and Warranty > Repairs",
+          "text": "Warranty repairs are done on site within 5 business days in the West, Central and East regions, and within 10 business days in the EU. Out-of-warranty repairs are quoted before any work starts."
+         },
+         {
+          "source": "returns_warranty.md",
+          "section": "Returns and Warranty > Returns",
+          "text": "Customers can return undamaged robots within 30 days of delivery for a refund minus a 15% restocking fee. Returns need a return authorisation (RMA) number from support before anything is shipped back. Returned orders are given the status returned once the robots arrive back at Acme."
+         }
+        ]
+       }
+      }
+     ],
+     "latency_ms": 17,
+     "cost_usd": 0.0
+    },
+    "hr": {
+     "answer": "I don't have information on that in the indexed documents.",
+     "sources": [],
+     "used_orders": false,
+     "clarification": false,
+     "guardrail": "no_evidence",
+     "steps": [
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "how long the warranty lasts"
+       },
+       "ok": true,
+       "count": 0,
+       "ms": 5,
+       "at_ms": 5,
+       "detail": {
+        "passages": []
+       }
+      }
+     ],
+     "latency_ms": 5,
+     "cost_usd": 0.0
+    },
+    "contractor": {
+     "answer": "Order 1074 was delivered on 2026-10-23 and is a PR-400 Pallet Runner. I can't say whether it is still under warranty: the documents I can read don't state the warranty period.",
+     "sources": [],
+     "used_orders": true,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "query_orders",
+       "args": {
+        "sql": "SELECT o.id, o.status, o.delivered_at, p.model FROM orders_v o JOIN order_items_v i ON i.order_id = o.id JOIN products_v p ON p.sku = i.sku WHERE o.id = 1074"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 1,
+       "at_ms": 1,
+       "detail": {
+        "sql": "SELECT o.id, o.status, o.delivered_at, p.model FROM orders_v AS o JOIN order_items_v AS i ON i.order_id = o.id JOIN products_v AS p ON p.sku = i.sku WHERE o.id = 1074 LIMIT 50",
+        "columns": [
+         "id",
+         "status",
+         "delivered_at",
+         "model"
+        ],
+        "rows": [
+         [
+          1074,
+          "delivered",
+          "2026-10-23",
+          "PR-400 Pallet Runner"
+         ]
+        ],
+        "hidden": []
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "how long the warranty lasts"
+       },
+       "ok": true,
+       "count": 0,
+       "ms": 18,
+       "at_ms": 19,
+       "detail": {
+        "passages": []
+       }
+      }
+     ],
+     "latency_ms": 19,
+     "cost_usd": 0.0
+    }
+   }
+  },
+  {
+   "id": "agent-catalog-then-count",
+   "question": "How many orders include the robot rated for cold storage?",
+   "runs": {
+    "admin": {
+     "answer": "21 orders include it. The robot rated for cold storage is the PR-900 Heavy Runner, which is rated down to minus 25 \u00b0C.",
+     "sources": [
+      "product_catalog.md"
+     ],
+     "used_orders": true,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "robot rated for cold storage"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 27,
+       "at_ms": 27,
+       "detail": {
+        "passages": [
+         {
+          "source": "product_catalog.md",
+          "section": "Acme Robotics Product Catalog > PR-900 Heavy Runner",
+          "text": "The PR-900 moves loads up to 900 kg, including double-stacked pallets and engine blocks, and is rated for cold storage down to minus 25 \u00b0C. List price is $112,000 per unit. Standard lead time is 21 business days, because each unit is load-tested before dispatch."
+         }
+        ]
+       }
+      },
+      {
+       "tool": "query_orders",
+       "args": {
+        "sql": "SELECT COUNT(DISTINCT order_id) AS orders FROM order_items_v WHERE sku = 'PR-900'"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 1,
+       "at_ms": 27,
+       "detail": {
+        "sql": "SELECT COUNT(DISTINCT order_id) AS orders FROM order_items_v WHERE sku = 'PR-900' LIMIT 50",
+        "columns": [
+         "orders"
+        ],
+        "rows": [
+         [
+          21
+         ]
+        ],
+        "hidden": []
+       }
+      }
+     ],
+     "latency_ms": 27,
+     "cost_usd": 0.0
+    },
+    "engineer": {
+     "answer": "21 orders include it. The robot rated for cold storage is the PR-900 Heavy Runner, which is rated down to minus 25 \u00b0C.",
+     "sources": [
+      "product_catalog.md"
+     ],
+     "used_orders": true,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "robot rated for cold storage"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 20,
+       "at_ms": 20,
+       "detail": {
+        "passages": [
+         {
+          "source": "product_catalog.md",
+          "section": "Acme Robotics Product Catalog > PR-900 Heavy Runner",
+          "text": "The PR-900 moves loads up to 900 kg, including double-stacked pallets and engine blocks, and is rated for cold storage down to minus 25 \u00b0C. List price is $112,000 per unit. Standard lead time is 21 business days, because each unit is load-tested before dispatch."
+         }
+        ]
+       }
+      },
+      {
+       "tool": "query_orders",
+       "args": {
+        "sql": "SELECT COUNT(DISTINCT order_id) AS orders FROM order_items_v WHERE sku = 'PR-900'"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 1,
+       "at_ms": 21,
+       "detail": {
+        "sql": "SELECT COUNT(DISTINCT order_id) AS orders FROM order_items_v WHERE sku = 'PR-900' LIMIT 50",
+        "columns": [
+         "orders"
+        ],
+        "rows": [
+         [
+          21
+         ]
+        ],
+        "hidden": []
+       }
+      }
+     ],
+     "latency_ms": 21,
+     "cost_usd": 0.0
+    },
+    "hr": {
+     "answer": "I don't have information on that in the indexed documents.",
+     "sources": [],
+     "used_orders": false,
+     "clarification": false,
+     "guardrail": "no_evidence",
+     "steps": [
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "robot rated for cold storage"
+       },
+       "ok": true,
+       "count": 0,
+       "ms": 5,
+       "at_ms": 5,
+       "detail": {
+        "passages": []
+       }
+      }
+     ],
+     "latency_ms": 6,
+     "cost_usd": 0.0
+    },
+    "contractor": {
+     "answer": "6 of the orders you can see include it. The robot rated for cold storage is the PR-900 Heavy Runner, which is rated down to minus 25 \u00b0C.",
+     "sources": [
+      "product_catalog.md"
+     ],
+     "used_orders": true,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "robot rated for cold storage"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 16,
+       "at_ms": 16,
+       "detail": {
+        "passages": [
+         {
+          "source": "product_catalog.md",
+          "section": "Acme Robotics Product Catalog > PR-900 Heavy Runner",
+          "text": "The PR-900 moves loads up to 900 kg, including double-stacked pallets and engine blocks, and is rated for cold storage down to minus 25 \u00b0C. List price is $112,000 per unit. Standard lead time is 21 business days, because each unit is load-tested before dispatch."
+         }
+        ]
+       }
+      },
+      {
+       "tool": "query_orders",
+       "args": {
+        "sql": "SELECT COUNT(DISTINCT order_id) AS orders FROM order_items_v WHERE sku = 'PR-900'"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 1,
+       "at_ms": 17,
+       "detail": {
+        "sql": "SELECT COUNT(DISTINCT order_id) AS orders FROM order_items_v WHERE sku = 'PR-900' LIMIT 50",
+        "columns": [
+         "orders"
+        ],
+        "rows": [
+         [
+          6
+         ]
+        ],
+        "hidden": []
+       }
+      }
+     ],
+     "latency_ms": 17,
+     "cost_usd": 0.0
+    }
+   }
+  },
+  {
+   "id": "agent-late-by-region",
+   "question": "How many orders are late in each region, and what should support tell those customers?",
+   "runs": {
+    "admin": {
+     "answer": "Six orders are late right now: 2 in East, 2 in West, 1 in Central and 1 in the EU.\n\nSupport emails each customer the same day with the current status and a new estimate. For Platinum-tier accounts the account manager also calls.",
+     "sources": [
+      "support_playbook.md"
+     ],
+     "used_orders": true,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "query_orders",
+       "args": {
+        "sql": "SELECT c.region, COUNT(*) AS late_orders FROM orders_v o JOIN customers_v c ON c.id = o.customer_id WHERE o.delivered_at IS NULL AND o.status NOT IN ('cancelled', 'returned') AND o.promised_by < '2026-10-28' GROUP BY c.region ORDER BY late_orders DESC, c.region"
+       },
+       "ok": true,
+       "count": 4,
+       "ms": 1,
+       "at_ms": 1,
+       "detail": {
+        "sql": "SELECT c.region, COUNT(*) AS late_orders FROM orders_v AS o JOIN customers_v AS c ON c.id = o.customer_id WHERE o.delivered_at IS NULL AND NOT o.status IN ('cancelled', 'returned') AND o.promised_by < '2026-10-28' GROUP BY c.region ORDER BY late_orders DESC, c.region LIMIT 50",
+        "columns": [
+         "region",
+         "late_orders"
+        ],
+        "rows": [
+         [
+          "east",
+          2
+         ],
+         [
+          "west",
+          2
+         ],
+         [
+          "central",
+          1
+         ],
+         [
+          "eu",
+          1
+         ]
+        ],
+        "hidden": []
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "what support tells the customer when an order is late"
+       },
+       "ok": true,
+       "count": 4,
+       "ms": 19,
+       "at_ms": 20,
+       "detail": {
+        "passages": [
+         {
+          "source": "support_playbook.md",
+          "section": "Support Playbook: Order Issues > Late orders",
+          "text": "When an order passes its promised date without being delivered, support emails the customer the same day with the current status and a new estimate. For Platinum-tier accounts the account manager also calls."
+         },
+         {
+          "source": "support_playbook.md",
+          "section": "Support Playbook: Order Issues > Escalation",
+          "text": "Escalate to the logistics lead if an order is more than 5 business days late, if a customer reports a safety incident, or if a Platinum-tier account asks for escalation. The logistics lead responds within 4 business hours."
+         },
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Promised delivery date",
+          "text": "The promised delivery date (promised_by) is set when the order is placed: the model's lead time plus the region's transit time. An order that is not delivered by its promised date is late, and support contacts the customer proactively."
+         },
+         {
+          "source": "order_lifecycle.md",
+          "section": "Order Lifecycle > on_hold",
+          "text": "The order is paused and will not move to the next status until the hold is cleared. Every on_hold order has a hold_reason; the shipping policy describes each reason and how to resolve it. An order on hold past its promised delivery date counts as late."
+         }
+        ]
+       }
+      }
+     ],
+     "latency_ms": 20,
+     "cost_usd": 0.0
+    },
+    "engineer": {
+     "answer": "Six orders are late right now: 2 in East, 2 in West, 1 in Central and 1 in the EU.\n\nSupport emails each customer the same day with the current status and a new estimate. For Platinum-tier accounts the account manager also calls.",
+     "sources": [
+      "support_playbook.md"
+     ],
+     "used_orders": true,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "query_orders",
+       "args": {
+        "sql": "SELECT c.region, COUNT(*) AS late_orders FROM orders_v o JOIN customers_v c ON c.id = o.customer_id WHERE o.delivered_at IS NULL AND o.status NOT IN ('cancelled', 'returned') AND o.promised_by < '2026-10-28' GROUP BY c.region ORDER BY late_orders DESC, c.region"
+       },
+       "ok": true,
+       "count": 4,
+       "ms": 1,
+       "at_ms": 1,
+       "detail": {
+        "sql": "SELECT c.region, COUNT(*) AS late_orders FROM orders_v AS o JOIN customers_v AS c ON c.id = o.customer_id WHERE o.delivered_at IS NULL AND NOT o.status IN ('cancelled', 'returned') AND o.promised_by < '2026-10-28' GROUP BY c.region ORDER BY late_orders DESC, c.region LIMIT 50",
+        "columns": [
+         "region",
+         "late_orders"
+        ],
+        "rows": [
+         [
+          "east",
+          2
+         ],
+         [
+          "west",
+          2
+         ],
+         [
+          "central",
+          1
+         ],
+         [
+          "eu",
+          1
+         ]
+        ],
+        "hidden": []
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "what support tells the customer when an order is late"
+       },
+       "ok": true,
+       "count": 4,
+       "ms": 15,
+       "at_ms": 16,
+       "detail": {
+        "passages": [
+         {
+          "source": "support_playbook.md",
+          "section": "Support Playbook: Order Issues > Late orders",
+          "text": "When an order passes its promised date without being delivered, support emails the customer the same day with the current status and a new estimate. For Platinum-tier accounts the account manager also calls."
+         },
+         {
+          "source": "support_playbook.md",
+          "section": "Support Playbook: Order Issues > Escalation",
+          "text": "Escalate to the logistics lead if an order is more than 5 business days late, if a customer reports a safety incident, or if a Platinum-tier account asks for escalation. The logistics lead responds within 4 business hours."
+         },
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Promised delivery date",
+          "text": "The promised delivery date (promised_by) is set when the order is placed: the model's lead time plus the region's transit time. An order that is not delivered by its promised date is late, and support contacts the customer proactively."
+         },
+         {
+          "source": "order_lifecycle.md",
+          "section": "Order Lifecycle > on_hold",
+          "text": "The order is paused and will not move to the next status until the hold is cleared. Every on_hold order has a hold_reason; the shipping policy describes each reason and how to resolve it. An order on hold past its promised delivery date counts as late."
+         }
+        ]
+       }
+      }
+     ],
+     "latency_ms": 16,
+     "cost_usd": 0.0
+    },
+    "hr": {
+     "answer": "I don't have information on that in the indexed documents.",
+     "sources": [],
+     "used_orders": false,
+     "clarification": false,
+     "guardrail": "no_evidence",
+     "steps": [
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "what support tells the customer when an order is late"
+       },
+       "ok": true,
+       "count": 0,
+       "ms": 5,
+       "at_ms": 5,
+       "detail": {
+        "passages": []
+       }
+      }
+     ],
+     "latency_ms": 5,
+     "cost_usd": 0.0
+    },
+    "contractor": {
+     "answer": "2 orders are late in the West region, the only region you can see. I can't say what support should tell those customers: the documents I can read don't cover it.",
+     "sources": [],
+     "used_orders": true,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "query_orders",
+       "args": {
+        "sql": "SELECT c.region, COUNT(*) AS late_orders FROM orders_v o JOIN customers_v c ON c.id = o.customer_id WHERE o.delivered_at IS NULL AND o.status NOT IN ('cancelled', 'returned') AND o.promised_by < '2026-10-28' GROUP BY c.region ORDER BY late_orders DESC, c.region"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 1,
+       "at_ms": 1,
+       "detail": {
+        "sql": "SELECT c.region, COUNT(*) AS late_orders FROM orders_v AS o JOIN customers_v AS c ON c.id = o.customer_id WHERE o.delivered_at IS NULL AND NOT o.status IN ('cancelled', 'returned') AND o.promised_by < '2026-10-28' GROUP BY c.region ORDER BY late_orders DESC, c.region LIMIT 50",
+        "columns": [
+         "region",
+         "late_orders"
+        ],
+        "rows": [
+         [
+          "west",
+          2
+         ]
+        ],
+        "hidden": []
+       }
+      },
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "what support tells the customer when an order is late"
+       },
+       "ok": true,
+       "count": 2,
+       "ms": 15,
+       "at_ms": 16,
+       "detail": {
+        "passages": [
+         {
+          "source": "shipping_policy.md",
+          "section": "Shipping Policy > Promised delivery date",
+          "text": "The promised delivery date (promised_by) is set when the order is placed: the model's lead time plus the region's transit time. An order that is not delivered by its promised date is late, and support contacts the customer proactively."
+         },
+         {
+          "source": "order_lifecycle.md",
+          "section": "Order Lifecycle > on_hold",
+          "text": "The order is paused and will not move to the next status until the hold is cleared. Every on_hold order has a hold_reason; the shipping policy describes each reason and how to resolve it. An order on hold past its promised delivery date counts as late."
+         }
+        ]
+       }
+      }
+     ],
+     "latency_ms": 16,
+     "cost_usd": 0.0
+    }
+   }
+  },
+  {
+   "id": "agent-needs-order-number",
+   "question": "Where is my order?",
+   "runs": {
+    "admin": {
+     "answer": "Which order do you mean? Give me the order number, for example 1042.",
+     "sources": [],
+     "used_orders": false,
+     "clarification": true,
+     "guardrail": "clarification",
+     "steps": [],
+     "latency_ms": 0,
+     "cost_usd": 0.0
+    },
+    "engineer": {
+     "answer": "Which order do you mean? Give me the order number, for example 1042.",
+     "sources": [],
+     "used_orders": false,
+     "clarification": true,
+     "guardrail": "clarification",
+     "steps": [],
+     "latency_ms": 0,
+     "cost_usd": 0.0
+    },
+    "hr": {
+     "answer": "Which order do you mean? Give me the order number, for example 1042.",
+     "sources": [],
+     "used_orders": false,
+     "clarification": true,
+     "guardrail": "clarification",
+     "steps": [],
+     "latency_ms": 0,
+     "cost_usd": 0.0
+    },
+    "contractor": {
+     "answer": "Which order do you mean? Give me the order number, for example 1042.",
+     "sources": [],
+     "used_orders": false,
+     "clarification": true,
+     "guardrail": "clarification",
+     "steps": [],
+     "latency_ms": 0,
+     "cost_usd": 0.0
+    }
+   }
+  },
+  {
+   "id": "agent-not-in-documents",
+   "question": "What is Jane Doe's salary?",
+   "runs": {
+    "admin": {
+     "answer": "Jane Doe's salary is not mentioned in the documents. Her resume and the team roster describe her role, not her pay.",
+     "sources": [],
+     "used_orders": false,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "Jane Doe salary"
+       },
+       "ok": true,
+       "count": 2,
+       "ms": 20,
+       "at_ms": 20,
+       "detail": {
+        "passages": [
+         {
+          "source": "jane_doe_resume.txt",
+          "section": "",
+          "text": "Jane Doe\nAtlanta, GA | jane.doe@example.com | +1 (555) 010-0100\n\nProfessional Summary\nStaff platform engineer with 7 years of experience in service networking and\ndeployment safety. Known for turning risky migrations into boring ones.\n\nExperience\n\nStaff Engineer | Acme Robotics, Atlanta, GA | Mar 2023 - Present\n- Led the Orion project, a service mesh migration covering 40 microservices.\n- Built automated canary analysis that cut failed deploys by half.\n\nBackend Engineer | Globex Corp, Remote | Jun 2019 - Feb 2023\n- Designed the billing reconciliation pipeline processing 2M events daily.\n- Owned on-call rotation and incident review for the payments platform.\n\nSkills\nGo, Envoy, Kubernetes, Terraform, PostgreSQL"
+         },
+         {
+          "source": "team_roster.md",
+          "section": "Team Roster",
+          "text": "Current engineers:  \n- Alex Chen, Principal Engineer (observability)\n- Jane Doe, Staff Engineer (service networking)\n- Priya Nair, Senior Engineer (data pipelines)\n- Sam Rivera, ML Engineer (search and retrieval)\n- Tom Becker, Staff Engineer (databases and reliability)  \nPast engineers:  \n- Morgan Reyes\n- Dana Whitfield"
+         }
+        ]
+       }
+      }
+     ],
+     "latency_ms": 20,
+     "cost_usd": 0.0
+    },
+    "engineer": {
+     "answer": "Jane Doe's salary is not mentioned in the documents I can read.",
+     "sources": [],
+     "used_orders": false,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "Jane Doe salary"
+       },
+       "ok": true,
+       "count": 1,
+       "ms": 16,
+       "at_ms": 16,
+       "detail": {
+        "passages": [
+         {
+          "source": "team_roster.md",
+          "section": "Team Roster",
+          "text": "Current engineers:  \n- Alex Chen, Principal Engineer (observability)\n- Jane Doe, Staff Engineer (service networking)\n- Priya Nair, Senior Engineer (data pipelines)\n- Sam Rivera, ML Engineer (search and retrieval)\n- Tom Becker, Staff Engineer (databases and reliability)  \nPast engineers:  \n- Morgan Reyes\n- Dana Whitfield"
+         }
+        ]
+       }
+      }
+     ],
+     "latency_ms": 17,
+     "cost_usd": 0.0
+    },
+    "hr": {
+     "answer": "Jane Doe's salary is not mentioned in the documents. Her resume and the team roster describe her role, not her pay.",
+     "sources": [],
+     "used_orders": false,
+     "clarification": false,
+     "guardrail": null,
+     "steps": [
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "Jane Doe salary"
+       },
+       "ok": true,
+       "count": 2,
+       "ms": 16,
+       "at_ms": 16,
+       "detail": {
+        "passages": [
+         {
+          "source": "jane_doe_resume.txt",
+          "section": "",
+          "text": "Jane Doe\nAtlanta, GA | jane.doe@example.com | +1 (555) 010-0100\n\nProfessional Summary\nStaff platform engineer with 7 years of experience in service networking and\ndeployment safety. Known for turning risky migrations into boring ones.\n\nExperience\n\nStaff Engineer | Acme Robotics, Atlanta, GA | Mar 2023 - Present\n- Led the Orion project, a service mesh migration covering 40 microservices.\n- Built automated canary analysis that cut failed deploys by half.\n\nBackend Engineer | Globex Corp, Remote | Jun 2019 - Feb 2023\n- Designed the billing reconciliation pipeline processing 2M events daily.\n- Owned on-call rotation and incident review for the payments platform.\n\nSkills\nGo, Envoy, Kubernetes, Terraform, PostgreSQL"
+         },
+         {
+          "source": "team_roster.md",
+          "section": "Team Roster",
+          "text": "Current engineers:  \n- Alex Chen, Principal Engineer (observability)\n- Jane Doe, Staff Engineer (service networking)\n- Priya Nair, Senior Engineer (data pipelines)\n- Sam Rivera, ML Engineer (search and retrieval)\n- Tom Becker, Staff Engineer (databases and reliability)  \nPast engineers:  \n- Morgan Reyes\n- Dana Whitfield"
+         }
+        ]
+       }
+      }
+     ],
+     "latency_ms": 16,
+     "cost_usd": 0.0
+    },
+    "contractor": {
+     "answer": "I don't have information on that in the indexed documents.",
+     "sources": [],
+     "used_orders": false,
+     "clarification": false,
+     "guardrail": "no_evidence",
+     "steps": [
+      {
+       "tool": "search_docs",
+       "args": {
+        "query": "Jane Doe salary"
+       },
+       "ok": true,
+       "count": 0,
+       "ms": 13,
+       "at_ms": 13,
+       "detail": {
+        "passages": []
+       }
+      }
+     ],
+     "latency_ms": 13,
+     "cost_usd": 0.0
+    }
+   }
+  }
+ ]
+}

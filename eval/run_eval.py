@@ -125,6 +125,9 @@ def run_retrieval_only(items, vectorstore, use_rerank=True):
             results.append((item["id"], "SKIP", "needs --live (Claude path); the browser translator "
                                                 "is checked by demo/check_search.mjs"))
             continue
+        if item.get("mode") == "agent":
+            results.append((item["id"], "SKIP", "needs --live (the agent chooses its steps)"))
+            continue
         if item.get("category") in ("multi-turn", "safety") or item.get("expect_refusal"):
             results.append((item["id"], "SKIP", "needs --live"))
             continue
@@ -212,6 +215,68 @@ def run_order_case(item, chain):
     return item["id"], "PASS", ""
 
 
+# Agent cases. Pure, so demo/agent_runs.py can hold a saved run to the same
+# expectations before it is published. Returns (ok, reason).
+def check_agent_result(item, result):
+    if item.get("expect_clarification"):
+        return result["clarification"], "expected a clarifying question, got an answer"
+    worked = [s for s in result["steps"] if s["ok"]]
+    used = {s["tool"] for s in worked}
+    missing = set(item.get("expect_tools", [])) - used
+    if missing:
+        return False, f"no result from {sorted(missing)} (used {sorted(used)})"
+    forbidden = set(item.get("expect_no_tools", [])) & used
+    if forbidden:
+        return False, f"{sorted(forbidden)} returned a result and should not have"
+    want = item.get("expect_row_values")
+    rows = [row for s in worked for row in s["detail"].get("rows", [])]
+    if want and not any(all(v in row for v in want) for row in rows):
+        return False, f"no query returned a row with {want}"
+    hidden = {column for s in worked for column in s["detail"].get("hidden", [])}
+    unhidden = set(item.get("expect_hidden", [])) - hidden
+    if unhidden:
+        return False, f"expected {sorted(unhidden)} to be hidden for this role"
+    cited = {os.path.basename(s) for s in result["sources_used"]}
+    if item.get("expect_sources_any") and not cited & set(item["expect_sources_any"]):
+        return False, f"cited {sorted(cited)}, expected one of {item['expect_sources_any']}"
+    return check_expectations(item, result["answer"])
+
+
+# What the agent read, as documents, so the groundedness judge can hold the
+# answer to it: passages as they are, query results as their rows.
+def _agent_evidence(result):
+    from langchain_core.documents import Document
+
+    evidence = []
+    for step in result["steps"]:
+        detail = step["detail"]
+        for passage in detail.get("passages", []):
+            evidence.append(Document(page_content=passage["text"], metadata={"source": passage["source"]}))
+        if detail.get("sql"):
+            table = rag._rows_as_text(detail["columns"], detail["rows"], set(detail["hidden"]))
+            evidence.append(Document(page_content=f"{detail['sql']}\n{table}",
+                                     metadata={"source": "orders database"}))
+    return evidence
+
+
+def run_agent_case(item, chain, judge=None):
+    import agent
+
+    result = agent.answer_agent_question(item["question"], [], chain, item.get("role", "admin"),
+                                         log_context={"mode": "eval"})
+    guardrail = result["guardrail"] or ""
+    if guardrail.startswith("api_error"):
+        return item["id"], "ERROR", guardrail
+    ok, reason = check_agent_result(item, result)
+    evidence = _agent_evidence(result)
+    if ok and judge is not None and evidence and not result["clarification"] \
+            and not looks_like_refusal(result["answer"]):
+        verdict = judge(result["answer"], evidence)
+        if not verdict.grounded:
+            return item["id"], "FAIL", f"ungrounded: {'; '.join(verdict.unsupported_claims)[:200]}"
+    return item["id"], "PASS" if ok else "FAIL", "" if ok else reason
+
+
 def run_live(items, vectorstore, use_judge=True):
     # No answer cache: a cached answer would hide the regression under test.
     chain = rag.build_chain(vectorstore, use_cache=False)
@@ -224,6 +289,9 @@ def run_live(items, vectorstore, use_judge=True):
             continue
         if item.get("mode") == "orders":
             results.append(run_order_case(item, chain))
+            continue
+        if item.get("mode") == "agent":
+            results.append(run_agent_case(item, chain, judge))
             continue
         if "turns" in item:
             history = []

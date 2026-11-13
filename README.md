@@ -48,6 +48,7 @@ question → answer_question()          ← every guardrail lives here
 | `auth/smb.py` | NAS login and per-file access checks |
 | `pipeline/` | Query stages: rerank, grading, cache, chunking, tracing, index health |
 | `search/orders.py` | Order questions: SQL guard, read-only connection, per-role views, prompt |
+| `agent.py` | The agent: a bounded tool loop over document search, order queries and file search, with the same guards inside each tool |
 | `demo/` | The in-browser demo published to GitHub Pages ([demo/README.md](demo/README.md)) |
 | `permissions.yaml` | Folder → group ACL map, pending NAS ACL tagging |
 
@@ -96,7 +97,7 @@ up/down are logged the same way, with the username and never the password.
 
 `eval/golden_set.yaml` holds test questions grounded in your actual `docs/` content — fact lookups, out-of-scope negatives (should refuse), a multi-turn follow-up, and a prompt-injection attempt. Git-ignored; `eval/golden_set.example.yaml` is the schema template.
 
-The retrieval-only run checks the reranked top 10, which is what the model actually sees. `--live` additionally verifies refusal and injection resistance, and an LLM judge fails any answer making a claim the retrieved text doesn't support (`--no-judge` to skip); it runs with the answer cache off so a cached answer can't hide a regression. An `ERROR` (vs. `FAIL`) means the API call itself failed, not a quality regression. Update the golden set when you change `docs/` — a stale one gives false failures and false passes.
+The retrieval-only run checks the reranked top 10, which is what the model actually sees. `--live` additionally verifies refusal and injection resistance, and an LLM judge fails any answer making a claim the retrieved text doesn't support (`--no-judge` to skip); it runs with the answer cache off so a cached answer can't hide a regression. The fixture golden set also holds agent cases (`mode: agent`), checked in `--live` on outcomes — tools that returned a result, values read, files cited — never on the order of steps. An `ERROR` (vs. `FAIL`) means the API call itself failed, not a quality regression. Update the golden set when you change `docs/` — a stale one gives false failures and false passes.
 
 **Why both tests and evals.** A hybrid retriever is deliberately redundant: when BM25 degrades, vector search often still surfaces the right chunk. That's good for users and bad for detection — a deliberately broken `_tokenize()` was measured passing the full retrieval eval while `tests/test_units.py` caught it immediately. Evals cover the pipeline end to end; unit tests guard the components the pipeline can mask.
 
@@ -124,7 +125,7 @@ everything don't pay for triple the prompt. A fully-filtered result returns
 the same wording as an empty one — a refusal must not reveal that a
 document exists.
 
-### Three modes
+### Four modes
 
 **Ask about orders** answers plain-English order questions from the orders
 database, leading with the answer and showing the SQL below it. A held or
@@ -135,6 +136,30 @@ late?" → `on_hold, address_verification` + the shipping policy on that hold).
   single `SELECT` over the asker's role views, read-only, `LIMIT 50`, 2s.
 - **Demo:** no model; the question picks one of nine SQL templates by meaning
   (see [demo/README.md](demo/README.md)).
+
+**Ask the agent** is for questions that need more than one step or more than
+one source: "Which on-hold orders are past their promised date, and what does
+each hold reason mean?" needs a query, then a search per hold reason. Claude
+chooses the steps from five tools (`agent.py`): `search_docs`, `query_orders`,
+`find_file`, `ask_user` and `final_answer`.
+
+- **Same guards, inside the tools.** `query_orders` goes through the SQL guard,
+  the role views and the read-only connection; `search_docs` through the
+  per-file access check, the reranker and grading. The asker's role and access
+  check are bound into the tools in code; no tool takes identity as an argument.
+- **Bounded.** At most `RAG_AGENT_MAX_STEPS` tool calls (6), a token budget and
+  a deadline per question. When one is reached the model gets a single last
+  call that can only answer from what it has, or ask a question.
+- **Grounded.** An answer with no tool result behind it is replaced with the
+  standard "no information" reply, and a cited file no tool returned is dropped.
+- **Visible.** The UI shows each step: the SQL and rows, the passages read.
+  One log line per question records the steps, SQL, counts, tokens and cost,
+  never rows or passage text.
+- **Opt-in.** It makes several model calls per question, so the one-shot modes
+  stay the default for questions they can answer.
+- **Demo:** no model. Seven questions replay saved runs per role; any other
+  question runs live in the browser through the same SQL templates and document
+  search as the Orders section (see [demo/README.md](demo/README.md)).
 
 **Ask about content** is the RAG path. **Find a file** matches names and
 folder paths through SQLite FTS5 — it costs nothing per query and covers

@@ -2,13 +2,17 @@
 //   search.js does document search, orders.js turns order questions into SQL,
 //   scene.js draws the 3D hero. This file connects them to the page:
 //   - the scroll story (scroll position -> scene pose and captions)
-//   - roles ("Search as"), shared by the document and order sections
+//   - roles ("Search as"), shared by the document, order and agent sections
 //   - the five failure cases, whose explanations are computed from each run
 //   - rendering results, the X-ray panels and the privacy meter
-//   - startup: index, models, sql.js and orders.db all load before the
-//     privacy meter starts counting, so searching adds zero requests.
+//   - the agent section, which plays back saved runs (agent.js)
+//   - startup: index, models, sql.js, orders.db and agent.json all load before
+//     the privacy meter starts counting, so searching adds zero requests.
 import { Engine, tokenize } from "./search.js";
-import { INTENTS, Translator, applyRole, loadContext, run, summarize } from "./orders.js";
+import { INTENTS, Translator, applyRole, clarifyingQuestion, loadContext, run, summarize } from "./orders.js";
+import { ROLES } from "./roles.js";
+import { SavedRuns, renderRun } from "./agent.js";
+import { liveRun } from "./liverun.js";
 
 const SQLJS = "https://cdn.jsdelivr.net/npm/sql.js@1.15.2/dist/";
 
@@ -79,17 +83,8 @@ function highlight(text, question) {
 }
 
 // ---- who is searching ----------------------------------------------------
-// Folder permissions as the real app would read them from the NAS. Applied
-// before retrieval: a file outside a role can't be ranked, scored or quoted.
-const isResume = (f) => /_resume\./.test(f);
-const ROLES = [
-  { id: "admin", label: "Admin", can: () => true },
-  { id: "engineer", label: "Engineer", can: (f) => !isResume(f) },
-  { id: "hr", label: "HR", can: (f) => isResume(f) || ["team_roster.md", "company_handbook.md", "onboarding_guide.md", "security_policy.md"].includes(f) },
-  // Contractors staff the West warehouse: the order and shipping docs, not HR or engineering.
-  { id: "contractor", label: "Contractor", can: (f) => ["company_handbook.md", "onboarding_guide.md", "testing_standards.md",
-    "order_lifecycle.md", "shipping_policy.md", "product_catalog.md"].includes(f) },
-];
+// Folder permissions (roles.js) as the real app would read them from the NAS.
+// Applied before retrieval: a file outside a role can't be ranked, scored or quoted.
 let role = ROLES[0];
 const allowed = () => new Set(engine.files.filter(role.can));
 
@@ -113,6 +108,9 @@ function showAccess() {
   const oel = $("#orders .access");
   oel.textContent = scope;
   oel.classList.toggle("blocked", role.id !== "admin");
+  const ael = $("#agent .access");
+  ael.textContent = `${hidden ? `${open} of ${engine.files.length} files` : `All ${open} files`} · ${scope.toLowerCase()}`;
+  ael.classList.toggle("blocked", role.id !== "admin");
 }
 function setRole(id) {
   role = ROLES.find((r) => r.id === id);
@@ -124,6 +122,7 @@ segs.forEach((seg) => seg.addEventListener("change", (e) => {
   // Same questions, new permissions.
   if (lastQuestion) ask(lastQuestion);
   if (lastOrderQuestion) askOrders(lastOrderQuestion);
+  if (lastAgentQuestion) askAgent(lastAgentQuestion);
 }));
 
 // ---- the five failure cases ------------------------------------------------
@@ -413,9 +412,7 @@ async function askOrders(question, k = null) {
       return;
     }
     if (t.missing.length) {
-      const hint = { order: "Which order? Add the order number, like 1042.", customer: "Which customer? Name them, like Juniper Fulfillment.",
-        status: "Which status? For example shipped, picking, delivered or cancelled.", period: "When? For example last week, this week or October." }[t.missing[0]];
-      oresults.innerHTML = head + `<div class="empty"><h3>One more detail</h3><p>${hint}</p></div>` + oxray(t, null, access);
+      oresults.innerHTML = head + `<div class="empty"><h3>One more detail</h3><p>${escape(clarifyingQuestion(t))}</p></div>` + oxray(t, null, access);
       return;
     }
 
@@ -455,6 +452,59 @@ for (const q of ORDER_EXAMPLES) {
   b.type = "button"; b.textContent = q;
   b.addEventListener("click", () => { oinput.value = q; askOrders(q); });
   li.append(b); olist.append(li);
+}
+
+// ---- agent -------------------------------------------------------------------
+// A question with a saved run (agent.js, agent.json) replays it. Any other
+// question runs live in the browser (liverun.js): the same SQL templates as the
+// Orders section and the same document search, with no model and no request.
+const aform = $("#aask");
+const ainput = $("#aq");
+const abutton = aform.querySelector("button");
+const aresults = $("#aresults");
+const alist = $("#agent .examples");
+let saved = null, agentReady = null, liveReady = null, lastAgentQuestion = null, stopPlayback = null;
+
+async function askAgent(text) {
+  text = text.trim();
+  if (!text || !liveReady) return;
+  lastAgentQuestion = text;
+  abutton.disabled = true;
+  try {
+    await agentReady.catch(() => {});  // without saved runs, everything runs live
+    stopPlayback?.();
+    const match = saved ? await saved.match(text) : { question: null };
+    for (const chip of alist.querySelectorAll("button")) {
+      chip.setAttribute("aria-pressed", String(chip.dataset.id === match.question?.id));
+    }
+    let view;
+    if (match.question) {
+      view = { data: saved.data, question: match.question, run: match.question.runs[role.id], role, typed: text };
+    } else {
+      await liveReady;
+      const run = await liveRun(text, { translator, octx, db: ordersDb, engine, roleId: role.id, allow: allowed() });
+      view = { data: { kind: "live" }, question: { question: text }, run, role, typed: text };
+    }
+    stopPlayback = renderRun(aresults, view, { animate: !reduce });
+  } catch (e) {
+    aresults.innerHTML = `<div class="empty"><h3>That run failed</h3><p>${escape(e.message)}. Reload the page to try again.</p></div>`;
+  } finally {
+    abutton.disabled = false;
+  }
+}
+
+aform.addEventListener("submit", (e) => { e.preventDefault(); askAgent(ainput.value); });
+
+// The chips are the saved runs' own questions, so the two can't drift apart.
+function showSavedQuestions() {
+  for (const question of saved.data.questions) {
+    const li = document.createElement("li");
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = question.question; b.dataset.id = question.id;
+    b.setAttribute("aria-pressed", "false");
+    b.addEventListener("click", () => { ainput.value = question.question; askAgent(question.question); });
+    li.append(b); alist.append(li);
+  }
 }
 
 // ---- privacy meter ---------------------------------------------------------
@@ -501,9 +551,26 @@ function watchRequests() {
     const orders = run(ordersDb, "SELECT COUNT(*) FROM orders", {}).rows[0][0];
     $("#orders-count").textContent = `. Beside them: an orders database of ${orders} orders`;
   })();
-  await ready;
-  translator = new Translator((t) => engine.embed(t));
-  await Promise.all([ordersReady, translator.ready()]);
+  // The saved agent runs load here too, for the same reason.
+  agentReady = (async () => {
+    const response = await fetch("agent.json");
+    if (!response.ok) throw new Error("agent.json is missing");
+    saved = new SavedRuns(await response.json(), (t) => engine.embed(t));
+    showSavedQuestions();
+    await ready;
+    await saved.ready();
+  })();
+  agentReady.catch(() => {
+    aresults.innerHTML = `<div class="empty"><h3>No saved runs on this build</h3><p>Questions still run live. Build the saved runs with <code>python demo/agent_runs.py</code>, then reload.</p></div>`;
+  });
+  // Live agent runs need the translator, the orders database and the reranker
+  // the document search uses, so the agent box opens once all three are in.
+  liveReady = ready.then(async () => {
+    translator = new Translator((t) => engine.embed(t));
+    await Promise.all([ordersReady, translator.ready(), engine.rerankerReady]);
+  });
+  await Promise.all([liveReady, agentReady.catch(() => {})]);
   obutton.disabled = false;
+  abutton.disabled = false;
   watchRequests();
 })();

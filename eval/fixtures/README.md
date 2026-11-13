@@ -12,7 +12,7 @@ is real: names, emails (`@example.com`), phone numbers (`555-01xx`), URLs
 | `docs/` | 18 documents: the business side (product catalog, order lifecycle, shipping policy, returns & warranty, support playbook), the engineering side (handbook, architecture notes, runbooks, security and testing policy, onboarding) and people (team roster, five resumes, one of them a `.docx` with hyperlinks) |
 | `orders.sql` | The orders database: 12 customers, 3 products, 80 orders with items and tracking events. **Generated, don't edit by hand** |
 | `make_orders.py` | Writes `orders.sql`. Deterministic, with a fixed "today" of 2026-10-28 stored in the `meta` table, so answers never drift |
-| `golden_set.yaml` | The eval questions and their expected answers, for documents, file search and orders |
+| `golden_set.yaml` | The eval questions and their expected answers, for documents, file search, orders and the agent. The agent cases marked `demo: true` are the demo page's saved questions; `demo_live: true` ones are run live by the page and checked in CI |
 
 ## Story orders
 
@@ -41,5 +41,6 @@ document or regenerating `orders.sql`, update the matching cases and run:
 ```bash
 python eval/fixtures/make_orders.py                          # if the data changed
 python eval/run_eval.py --golden-set eval/fixtures/golden_set.yaml
+python demo/agent_runs.py                                    # rebuild the demo's saved agent runs (no API call)
 python demo/build_index.py && node demo/check_search.mjs     # the browser demo's checks
 ```

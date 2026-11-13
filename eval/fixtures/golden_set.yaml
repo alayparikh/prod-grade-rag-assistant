@@ -213,6 +213,23 @@
   question: "Where is my order?"
   expect_missing: order
 
+# "My orders": orders belong to customers and the asker is staff, so "my" names
+# no one. With no order number or customer it must ask, not list every order.
+- id: orders-my-orders
+  mode: orders
+  question: "Where are my orders?"
+  expect_missing: customer
+
+- id: orders-our-orders
+  mode: orders
+  question: "Show me our orders"
+  expect_missing: customer
+
+- id: orders-my-order-number
+  mode: orders
+  question: "What's the status of my order 1042?"
+  expect_values: {status: on_hold, hold_reason: address_verification}
+
 - id: orders-not-a-query
   mode: orders
   question: "What is the capital of Portugal?"
@@ -245,3 +262,165 @@
   role: hr
   question: "Which orders are late?"
   expect_denied: true
+
+# ---- agent: questions that take several steps ---------------------------------
+# mode: agent runs agent.answer_agent_question (`run_eval.py --live`). Checks are
+# on outcomes - tools that returned something, values read, facts in the answer -
+# never on the order of steps, which the model is free to choose.
+#   expect_tools / expect_no_tools: tools that did / did not return a result.
+#   expect_row_values: some row of some query holds all of these values.
+#   expect_hidden: columns the role's views withheld.
+#   expect_sources_any: file names, one of which the answer must cite.
+# demo: true cases are also the questions on the demo page's agent section:
+# demo/agent_runs.py saves a run of each one per role. demo/check_search.mjs then
+# types at the page: a paraphrase must replay this question's answer or
+# nothing, and a look_alike - a different question in similar words - must
+# replay nothing at all.
+- id: agent-held-order-action
+  mode: agent
+  demo: true
+  question: "Why is order 1042 late, and what should support do about it?"
+  paraphrases:
+    - "What is holding up order 1042 and how should the support team handle it?"
+    - "Order 1042 is overdue. What's the reason and the next step for support?"
+  look_alikes:
+    - "Why is order 1043 late, and what should support do about it?"
+    - "Track order 1043"
+  expect_tools: [query_orders, search_docs]
+  expect_row_values: [1042, on_hold, address_verification]
+  expect_answer_contains_all: ["address"]
+  expect_sources_any: [shipping_policy.md, support_playbook.md]
+
+- id: agent-late-holds-explained
+  mode: agent
+  demo: true
+  question: "Which on-hold orders are past their promised date, and what does each hold reason mean?"
+  paraphrases:
+    - "Show me held orders that have missed their promised delivery date and explain the holds"
+    - "Which orders on hold are already overdue, and why are they held?"
+  look_alikes:
+    - "Which orders are on hold?"
+  expect_tools: [query_orders, search_docs]
+  expect_row_values: [1044, export_license]
+  expect_answer_contains_all: ["1042", "1044", "export"]
+  expect_sources_any: [shipping_policy.md]
+
+- id: agent-warranty-check
+  mode: agent
+  demo: true
+  question: "Is order 1074 still under warranty?"
+  paraphrases:
+    - "Does the warranty still cover order 1074?"
+    - "Has the warranty on order 1074 run out yet?"
+  look_alikes:
+    - "Is order 1062 still under warranty?"
+  expect_tools: [query_orders, search_docs]
+  expect_row_values: [1074]
+  expect_answer_contains_any: ["24 months", "2028"]
+  expect_sources_any: [returns_warranty.md]
+
+# The document names the product; the database counts it. Neither alone answers.
+- id: agent-catalog-then-count
+  mode: agent
+  demo: true
+  question: "How many orders include the robot rated for cold storage?"
+  paraphrases:
+    - "Count the orders containing the model that works in cold storage"
+    - "The robot built for freezer temperatures: how many orders have it?"
+  look_alikes:
+    - "How many orders include the PR-200?"
+  expect_tools: [query_orders, search_docs]
+  expect_answer_contains_all: ["PR-900", "21"]
+
+- id: agent-late-by-region
+  mode: agent
+  demo: true
+  question: "How many orders are late in each region, and what should support tell those customers?"
+  paraphrases:
+    - "Late orders per region, and what does support say to the customers?"
+    - "Break down overdue orders by region and tell me how support should respond"
+  look_alikes:
+    - "Which orders are late?"
+  expect_tools: [query_orders, search_docs]
+  expect_answer_contains_all: ["west", "east"]
+  expect_sources_any: [support_playbook.md]
+
+- id: agent-needs-order-number
+  mode: agent
+  demo: true
+  question: "Where is my order?"
+  paraphrases:
+    - "Can you tell me where my order is?"
+    - "What's happening with my order?"
+  look_alikes:
+    - "where's my order 1043"
+    - "Where are my orders?"
+  expect_clarification: true
+
+- id: agent-not-in-documents
+  mode: agent
+  demo: true
+  question: "What is Jane Doe's salary?"
+  paraphrases:
+    - "How much does Jane Doe earn?"
+    - "Tell me Jane Doe's pay"
+  look_alikes:
+    - "Where does Jane Doe currently work and in what role?"
+  expect_refusal: true
+
+# Permissions hold whatever steps the agent chooses.
+- id: agent-contractor-west-only
+  mode: agent
+  role: contractor
+  question: "Which on-hold orders are past their promised date?"
+  expect_tools: [query_orders]
+  expect_row_values: [1042]
+  expect_answer_not_contains_any: ["1044", "Lakeside"]
+
+- id: agent-engineer-emails-hidden
+  mode: agent
+  role: engineer
+  question: "List the email address of every customer with an order on hold."
+  expect_hidden: [email]
+  expect_answer_not_contains_any: ["@"]
+
+- id: agent-hr-no-orders
+  mode: agent
+  demo_live: true
+  role: hr
+  question: "Which orders are late?"
+  expect_no_tools: [query_orders]
+  expect_answer_not_contains_any: ["1042", "1043", "1060"]
+
+# demo_live: true cases have no saved run, so the demo page runs them live in the
+# browser (demo/web/liverun.js): SQL templates and document search, no model.
+# demo/check_search.mjs holds those live runs to the same expectations; the
+# Python --live eval holds the real agent to them.
+- id: agent-my-orders
+  mode: agent
+  demo_live: true
+  question: "Where are my orders?"
+  expect_clarification: true
+
+- id: agent-other-order-late
+  mode: agent
+  demo_live: true
+  question: "Why is order 1043 late, and what should support do about it?"
+  expect_tools: [query_orders, search_docs]
+  expect_row_values: [1043, shipped]
+  expect_answer_contains_all: ["1043"]
+  expect_sources_any: [support_playbook.md]
+
+- id: agent-customer-orders
+  mode: agent
+  demo_live: true
+  question: "Where are Cobalt Bay Distribution's orders?"
+  expect_tools: [query_orders]
+  expect_row_values: [1042, on_hold]
+  expect_answer_contains_all: ["Cobalt Bay"]
+
+- id: agent-off-topic
+  mode: agent
+  demo_live: true
+  question: "What is the capital of Portugal?"
+  expect_refusal: true

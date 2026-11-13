@@ -170,11 +170,12 @@ def run(connection, sql):
 
 
 # ---- the prompt ----------------------------------------------------------------
-def schema_prompt(connection):
+# The views and the facts needed to query them. Shared by the one-shot order
+# path below and the agent (agent.py), so the two cannot describe the schema
+# differently.
+def schema_facts(connection):
     tables = "\n".join(f"  {view}({', '.join(cols)})" for view, cols in VIEWS.items())
-    return f"""You translate questions about Acme Robotics orders into one SQLite SELECT.
-
-Readable views (use only these):
+    return f"""Readable views (use only these):
 {tables}
 
 Facts:
@@ -192,6 +193,15 @@ Facts:
 - Weeks run Monday to Sunday; "last week" is the previous full week, "this week" runs
   from Monday to today.
 - Customer names are in customers_v.name; match them with LIKE '%name%'.
+- Orders belong to customers. The person asking is staff, not a customer, so "my order"
+  or "our orders" names no order and no customer. Without an order number or a customer
+  name, don't guess one and don't list every order: ask which order or which customer."""
+
+
+def schema_prompt(connection):
+    return f"""You translate questions about Acme Robotics orders into one SQLite SELECT.
+
+{schema_facts(connection)}
 
 Rules: one SELECT, no comments, no other tables. Prefer readable column names. If the
 question isn't about orders, or needs a value it doesn't give, set answerable to false."""

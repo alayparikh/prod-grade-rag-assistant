@@ -29,7 +29,13 @@ halves never hold different numbers.
 | `web/search.js` | The query pipeline: embedding, BM25 keyword search, rank fusion, cross-encoder rerank, cutoff |
 | `web/app.js` | Wires scroll to the scene, and the search box to `search.js`; renders results |
 | `web/orders.js` | Order questions: query types, value extraction, per-role SQL views |
-| `check_search.mjs` | Runs the golden-set questions through `search.js` and `orders.js` in Node; CI fails on any miss |
+| `web/agent.js` | The agent section: matches a typed question to a saved one, and plays a saved run back as a tape of steps |
+| `web/liverun.js` | Runs an agent question with no saved run, live in the browser: SQL templates, then the policy search, no model |
+| `web/roles.js` | Which role can open which documents; shared by the page and the check |
+| `agent_runs.py` | Builds `web/agent.json`: each agent question run once per role through the real agent loop; `--check` verifies the committed file |
+| `agent_examples.yaml` | The script for those runs: which steps to take and the answer's wording, per question and role |
+| `web/agent.json` | The saved runs (committed): every step, what it returned, the answer |
+| `check_search.mjs` | Runs the golden-set questions through `search.js`, `orders.js` and `agent.js` in Node; CI fails on any miss |
 
 ## The query path, step by step (`search.js`)
 
@@ -56,6 +62,7 @@ python -m http.server 8765 --directory demo/web   # then open http://localhost:8
 Check the browser search against the golden set:
 
 ```bash
+python demo/agent_runs.py --check     # the saved agent runs are current
 npm install --prefix demo/.node @huggingface/transformers@3.7.1 sql.js@1.15.2
 node demo/check_search.mjs
 ```
@@ -89,10 +96,68 @@ a **parameterized** SQL template. Nothing typed ever becomes SQL text.
   hidden, Contractor sees West-region orders only, HR has no access.
 - For a held or late order, the matching policy passage from the documents is
   shown beside the row.
+- "My orders" with no order number or customer asks which customer, instead
+  of matching the nearest list ("where are my orders?" used to read as "which
+  orders are on hold?"). Orders belong to customers, and the person signed in
+  is staff. The full app's SQL prompt and agent carry the same rule.
 
-`check_search.mjs` runs the golden set's 15 order cases through this code on
+`check_search.mjs` runs the golden set's 18 order cases through this code on
 every deploy. The Python app answers open-ended order questions with Claude
 (`search/orders.py`); `run_eval.py --live` checks it against the same cases.
+
+## Ask the agent (`agent.js`)
+
+The full app's agent (`agent.py`) calls Claude to choose its steps. This page
+calls nothing, so it does two things instead: a question with a saved run
+replays it, and any other question runs live, here, with fixed steps.
+
+**Live runs** (`liverun.js`, labelled "Live run"). The same two halves as the
+sections above, joined: the question goes through the SQL translator under
+the role's views; for held or late orders, the policy that explains them is
+found by document search under the role's document access (why late, then
+one search per hold reason, at most 3); anything that isn't an order
+question is a document search. The answer is the translator's sentence plus
+the top passage of each search, so it says nothing the steps didn't return.
+A role with no order access gets the full app's "no information" reply.
+
+**Saved runs:**
+
+
+- **What is real.** `agent_runs.py` runs each question once per role through
+  the real agent loop: the SQL goes through the real guard and the role's
+  views, the searches through real retrieval and the role's document access,
+  and the agent's own checks apply (an answer with no evidence is replaced, a
+  citation no step returned is dropped).
+- **What is scripted.** The model is replaced by `agent_examples.yaml`: which
+  steps to take and how the answer is worded. The page labels each run
+  "Example run" and says so. `agent_runs.py --live` records the real agent
+  instead (it calls Claude and costs money); the page then shows the model,
+  timings and cost. That path has not been run yet.
+- **Nothing unchecked ships.** The build fails if a scripted answer claims
+  more than that role's steps returned, if a run holds something its role may
+  not see (a file it cannot open, a customer email, a customer outside the
+  Contractor's region), or if the Admin run misses the golden set's
+  expectations for the question.
+- **Staleness.** `agent.json` stores a fingerprint of the fixtures, prompts,
+  tool definitions, model, questions, roles and example script.
+  `agent_runs.py --check` recomputes it on every deploy, with no API call.
+- **Typed questions.** A typed question is matched to a saved one by embedding
+  similarity, and the page shows which saved question it matched. Measured on
+  the golden set: rewordings scored 0.60 to 0.93 and look-alike questions up
+  to 0.77, so no threshold separates them. The page uses 0.8 and requires the
+  numbers in both questions to match (order 1043 never replays order 1042's
+  answer), and one order never matches many ("where are my orders?" scored
+  0.85 against the saved "where is my order?" but needs a different reply).
+  8 of 14 test rewordings match a saved run; the rest run live.
+- **Roles.** The role switch replays the run made for that role. On a static
+  page that is an illustration, not security: every run ships with the page.
+
+`check_search.mjs` checks, in the browser's own code, that the page's document
+rules match the ones the runs were made under, that every question has a run
+for every role, that no rewording replays a different question, that no
+look-alike replays anything, and that the golden set's `demo_live` cases run
+live and meet the same expectations the Python `--live` eval holds the real
+agent to (60 checks in all).
 
 ## What it cannot do
 
@@ -100,4 +165,5 @@ There is no language model, so it quotes passages rather than writing
 answers. It cannot count ("how many engineers?"), follow a pronoun in a
 follow-up, or notice that a passage about someone doesn't contain the fact
 asked for (a salary question returns their resume). The full Python app with
-Claude does all three; `eval/run_eval.py --live` tests them.
+Claude does all three; `eval/run_eval.py --live` tests them. The agent section's live
+runs take fixed steps, so they can't plan a question the templates don't cover.

@@ -1,0 +1,145 @@
+# The agent runs shown on the demo page, per question (ids from the
+# `mode: agent`, `demo: true` cases in eval/fixtures/golden_set.yaml).
+#
+# demo/agent_runs.py plays each plan through the real agent loop with the model
+# replaced by this script: the SQL runs through the real guard and the role's
+# views, the searches through real retrieval and the role's document access.
+# So the steps and what they return are real; the choice of steps and the
+# wording of the answer are written here.
+#
+#   plans     the tool calls, turn by turn (calls in one turn run together).
+#             `default` applies to every role without its own plan.
+#   answers   per role, the answer and the files it cites. The build fails if
+#             the agent's own checks would change either: an answer with no
+#             evidence behind it, or a cited file the role's steps never returned.
+#   ask       the question the agent asks back instead of answering.
+#
+# Keep every answer to what that role's steps actually return. HR has no order
+# access and cannot open the order documents, so its runs find nothing and get
+# the standard "no information" reply.
+
+agent-held-order-action:
+  plans:
+    default:
+      - - {tool: query_orders, sql: "SELECT o.id, c.name AS customer, o.status, o.hold_reason, o.promised_by FROM orders_v o JOIN customers_v c ON c.id = o.customer_id WHERE o.id = 1042"}
+      - - {tool: search_docs, query: "address verification hold"}
+      - - {tool: search_docs, query: "what support does about a held order"}
+    hr:
+      - - {tool: search_docs, query: "why order 1042 is late"}
+  answers:
+    admin: &held_full
+      text: |-
+        Order 1042 (Cobalt Bay Distribution) is on hold for address verification: the carrier could not confirm the delivery address. It was promised for 2026-10-21, so it is 7 days late.
+
+        Support should ask the customer to confirm the address and a site contact; the hold normally clears within 2 business days of their reply. Don't promise a new delivery date until the hold is cleared.
+      sources: [shipping_policy.md, support_playbook.md]
+    engineer: *held_full
+    contractor:
+      text: |-
+        Order 1042 (Cobalt Bay Distribution) is on hold for address verification: the carrier could not confirm the delivery address. It was promised for 2026-10-21, so it is 7 days late.
+
+        Support asks the customer to confirm the address and a site contact; the hold normally clears within 2 business days of their reply.
+      sources: [shipping_policy.md]
+    hr: &nothing
+      text: "I don't have information on that in the indexed documents."
+      sources: []
+
+agent-late-holds-explained:
+  plans:
+    default:
+      - - {tool: query_orders, sql: "SELECT id, hold_reason, promised_by FROM orders_v WHERE status = 'on_hold' AND promised_by < '2026-10-28' ORDER BY id"}
+      - - {tool: search_docs, query: "address verification hold"}
+        - {tool: search_docs, query: "export licence hold"}
+    contractor:
+      - - {tool: query_orders, sql: "SELECT id, hold_reason, promised_by FROM orders_v WHERE status = 'on_hold' AND promised_by < '2026-10-28' ORDER BY id"}
+      - - {tool: search_docs, query: "address verification hold"}
+    hr:
+      - - {tool: search_docs, query: "on-hold orders past their promised date"}
+  answers:
+    admin: &late_holds_full
+      text: |-
+        Two on-hold orders are past their promised date.
+
+        **1042**, promised 2026-10-21, is held for address verification: the carrier could not confirm the delivery address. Support asks the customer to confirm it, and the hold normally clears within 2 business days of their reply.
+
+        **1044**, promised 2026-10-22, is held for an export licence: EU orders of the PR-900 need one because of its battery capacity. Licences take 5 to 10 business days, and the order ships as soon as one is granted.
+      sources: [shipping_policy.md]
+    engineer: *late_holds_full
+    contractor:
+      text: |-
+        One on-hold order that you can see is past its promised date.
+
+        **1042**, promised 2026-10-21, is held for address verification: the carrier could not confirm the delivery address. Support asks the customer to confirm it, and the hold normally clears within 2 business days of their reply.
+      sources: [shipping_policy.md]
+    hr: *nothing
+
+agent-warranty-check:
+  plans:
+    default:
+      - - {tool: query_orders, sql: "SELECT o.id, o.status, o.delivered_at, p.model FROM orders_v o JOIN order_items_v i ON i.order_id = o.id JOIN products_v p ON p.sku = i.sku WHERE o.id = 1074"}
+      - - {tool: search_docs, query: "how long the warranty lasts"}
+    hr:
+      - - {tool: search_docs, query: "how long the warranty lasts"}
+  answers:
+    admin: &warranty_full
+      text: "Yes. Order 1074 was delivered on 2026-10-23 and is a PR-400 Pallet Runner, which is covered for 24 months from delivery, so the warranty runs until 2028-10-23. Wheels and bumpers are wear parts and are covered for 12 months."
+      sources: [returns_warranty.md]
+    engineer: *warranty_full
+    contractor:
+      text: "Order 1074 was delivered on 2026-10-23 and is a PR-400 Pallet Runner. I can't say whether it is still under warranty: the documents I can read don't state the warranty period."
+      sources: []
+    hr: *nothing
+
+agent-catalog-then-count:
+  plans:
+    default:
+      - - {tool: search_docs, query: "robot rated for cold storage"}
+      - - {tool: query_orders, sql: "SELECT COUNT(DISTINCT order_id) AS orders FROM order_items_v WHERE sku = 'PR-900'"}
+    hr:
+      - - {tool: search_docs, query: "robot rated for cold storage"}
+  answers:
+    admin: &count_full
+      text: "21 orders include it. The robot rated for cold storage is the PR-900 Heavy Runner, which is rated down to minus 25 °C."
+      sources: [product_catalog.md]
+    engineer: *count_full
+    contractor:
+      text: "6 of the orders you can see include it. The robot rated for cold storage is the PR-900 Heavy Runner, which is rated down to minus 25 °C."
+      sources: [product_catalog.md]
+    hr: *nothing
+
+agent-late-by-region:
+  plans:
+    default:
+      - - {tool: query_orders, sql: "SELECT c.region, COUNT(*) AS late_orders FROM orders_v o JOIN customers_v c ON c.id = o.customer_id WHERE o.delivered_at IS NULL AND o.status NOT IN ('cancelled', 'returned') AND o.promised_by < '2026-10-28' GROUP BY c.region ORDER BY late_orders DESC, c.region"}
+      - - {tool: search_docs, query: "what support tells the customer when an order is late"}
+    hr:
+      - - {tool: search_docs, query: "what support tells the customer when an order is late"}
+  answers:
+    admin: &regions_full
+      text: |-
+        Six orders are late right now: 2 in East, 2 in West, 1 in Central and 1 in the EU.
+
+        Support emails each customer the same day with the current status and a new estimate. For Platinum-tier accounts the account manager also calls.
+      sources: [support_playbook.md]
+    engineer: *regions_full
+    contractor:
+      text: "2 orders are late in the West region, the only region you can see. I can't say what support should tell those customers: the documents I can read don't cover it."
+      sources: []
+    hr: *nothing
+
+agent-needs-order-number:
+  ask: "Which order do you mean? Give me the order number, for example 1042."
+
+agent-not-in-documents:
+  plans:
+    default:
+      - - {tool: search_docs, query: "Jane Doe salary"}
+  answers:
+    admin: &no_salary
+      text: "Jane Doe's salary is not mentioned in the documents. Her resume and the team roster describe her role, not her pay."
+      sources: []
+    hr: *no_salary
+    engineer:
+      text: "Jane Doe's salary is not mentioned in the documents I can read."
+      sources: []
+    contractor: *nothing

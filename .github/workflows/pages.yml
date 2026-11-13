@@ -46,6 +46,14 @@ jobs:
       - name: Build search index
         run: python demo/build_index.py
 
+      # The agent section plays back runs saved in demo/web/agent.json, built
+      # by hand with demo/agent_runs.py and committed. Nothing is rebuilt here
+      # and no key is needed: this step fails the deploy if the committed file
+      # is missing, was made against different fixtures, prompts, tools, model
+      # or example script, or holds something a role may not see.
+      - name: Check the saved agent runs are current
+        run: python demo/agent_runs.py --check
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"

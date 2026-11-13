@@ -5,7 +5,10 @@
     scene.js   the 3D hero and scroll story
     search.js  document search (embeddings, BM25, rank fusion, reranker)
     orders.js  order questions -> parameterized SQL over sql.js
-    app.js     wiring, roles, failure cases, rendering
+    agent.js   plays back saved runs of the full app's agent (agent.json)
+    liverun.js runs any other agent question live: SQL templates + document search
+    roles.js   which role can open which documents
+    app.js     wiring, failure cases, rendering
   Built and checked by .github/workflows/pages.yml; see demo/README.md.
 -->
 <html lang="en">
@@ -263,6 +266,79 @@ form button:disabled { background: var(--steel-soft); cursor: progress; }
 .olanes { grid-template-columns: repeat(3, 1fr); }
 @media (max-width: 760px) { .answer-grid.with-why, .olanes { grid-template-columns: 1fr; } }
 
+/* ---- agent ------------------------------------------------------------------ */
+/* A saved run, played back as a tape: one row per step, its place in the run
+   down the left edge, each step in the colour the page already gives that kind of search. */
+.agent { padding: clamp(64px, 10vw, 120px) var(--gutter) 64px; max-width: 1020px; margin: 0 auto; border-top: 2px solid var(--graphite); }
+.agent > h2 { font: 800 clamp(52px, 9vw, 104px)/.88 var(--display); text-transform: uppercase; margin: 0 0 18px; }
+.anote { font: 400 12px/1.6 var(--mono); color: var(--steel); max-width: 74ch; margin: 0 0 22px; }
+
+/* The question bar stays in view while the tape scrolls beneath it, so it is
+   glass: the step colours passing under it show through. Only this one layer
+   is translucent; everything that has to be read sits on solid ground. */
+.acomposer {
+  position: sticky; top: 46px; z-index: 5; margin: 0 -12px; padding: 12px;
+  background: color-mix(in srgb, var(--aluminum) 62%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(1.6); backdrop-filter: blur(16px) saturate(1.6);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 70%, transparent),
+              inset 0 0 0 1px color-mix(in srgb, #fff 35%, transparent),
+              0 14px 28px -20px color-mix(in srgb, var(--graphite) 70%, transparent);
+}
+.acomposer form { background: color-mix(in srgb, var(--slip) 82%, transparent); }
+.agent .examples { margin: 16px 0 36px; }
+.agent .examples button { min-height: 44px; text-align: left; transition: background .18s, border-color .18s, color .18s; }
+.agent .examples button[aria-pressed="true"] { background: var(--graphite); border-color: var(--graphite); color: var(--slip); }
+
+.amatch { border-left: 3px solid var(--cobalt); background: var(--slip); padding: 14px 18px; margin: 0 0 26px; max-width: 68ch; }
+.tape { list-style: none; margin: 0; padding: 0; }
+.tstep, .averdict { --c: var(--graphite); display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 0 34px; position: relative; padding-bottom: 26px; }
+/* The tape's spine, drawn per row so it stops at the answer. */
+.tstep::before { content: ""; position: absolute; left: 80px; top: 6px; bottom: -6px; width: 2px; background: var(--graphite); }
+.tstep::after, .averdict::after { content: ""; position: absolute; left: 75px; top: 5px; width: 12px; height: 12px; background: var(--c); }
+.tstep.from-docs { --c: var(--violet); }
+.tstep.from-orders { --c: var(--amber); }
+.tstep.refused { --c: var(--red); }
+.tat { font: 500 11px/2 var(--mono); letter-spacing: .04em; color: var(--steel); text-align: right; white-space: nowrap; }
+.tbody h4, .averdict h4 { font: 700 26px/1 var(--display); text-transform: uppercase; letter-spacing: .01em; margin: 0 0 6px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.tbody h4 em { font: 500 11px/1 var(--mono); font-style: normal; letter-spacing: .06em; color: var(--c); }
+.tbody q { display: block; font: 400 13px/1.5 var(--mono); color: var(--steel); quotes: "“" "”"; }
+.tbody summary { cursor: pointer; display: inline-block; padding: 13px 0; font: 500 12px/1.5 var(--mono); list-style: none; border-bottom: 1px solid transparent; }
+.tbody summary::-webkit-details-marker { display: none; }
+.tbody summary::before { content: "+ "; }
+.tbody details[open] summary::before { content: "− "; }
+.tbody summary:hover { color: var(--cobalt); }
+.tbody .sqlblock { margin: 4px 0 12px; }
+.tbody .sqlblock pre { padding-bottom: 18px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tbody blockquote { margin: 4px 0 10px; padding: 12px 16px; background: var(--slip); border-left: 3px solid var(--violet); font-size: 15px; white-space: pre-line; max-width: 72ch; }
+.tbody cite { display: block; font: 500 11px/1.4 var(--mono); font-style: normal; letter-spacing: .04em; color: var(--steel); margin-bottom: 6px; }
+.tnote { font: 400 12px/1.5 var(--mono); color: var(--steel); margin: 4px 0 0; }
+.tape-empty { margin: 0 0 26px; }
+
+.averdict { --c: var(--cobalt); padding-bottom: 0; }
+.averdict.asked { --c: var(--amber); }
+.averdict::after { left: 73px; top: 3px; width: 16px; height: 16px; }
+.averdict h4 { color: var(--c); }
+.atext { font: 500 clamp(19px, 2.2vw, 24px)/1.4 var(--body); max-width: 56ch; }
+.atext p { margin: 0 0 10px; }
+.asrc { font: 400 12px/2 var(--mono); color: var(--steel); margin: 8px 0 0; }
+.asrc .file { color: var(--graphite); background: var(--slip); border: 1px solid var(--steel-soft); padding: 2px 7px; white-space: nowrap; }
+.astamp { margin: 30px 0 0; padding-top: 14px; border-top: 1px dashed var(--steel); font: 400 12px/1.7 var(--mono); color: var(--steel); }
+.astamp b { font-weight: 500; text-transform: uppercase; letter-spacing: .08em; color: var(--graphite); border: 1.5px solid var(--graphite); padding: 2px 7px; margin-right: 8px; }
+
+/* Steps arrive in the order they were taken. They are laid out from the
+   start and only faded in, so the page never moves during playback. */
+.tstep, .averdict, .astamp { transition: opacity .35s cubic-bezier(.22, 1, .36, 1), transform .35s cubic-bezier(.22, 1, .36, 1); }
+.pending { opacity: 0; transform: translateY(10px); }
+
+@media (max-width: 760px) {
+  .acomposer { position: static; margin: 0; padding: 0; background: none; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .tstep, .averdict { grid-template-columns: minmax(0, 1fr); padding-left: 28px; }
+  .tstep::before { left: 5px; }
+  .tstep::after { left: 0; }
+  .averdict::after { left: -2px; }
+  .tat { text-align: left; }
+}
+
 footer {
   padding: 40px 0 56px; width: min(824px, 100% - 2 * var(--gutter)); margin: 0 auto;
   font: 400 12px/1.7 var(--mono); color: var(--steel); border-top: 1px solid var(--steel-soft);
@@ -280,6 +356,7 @@ footer {
   html { scroll-behavior: auto; }
   .cue::after { animation: none; }
   .step { transition: none; }
+  .tstep, .averdict, .astamp, .agent .examples button { transition: none; }
 }
 </style>
 </head>
@@ -290,6 +367,7 @@ footer {
     <a href="#problems">Problems</a>
     <a href="#try">Documents</a>
     <a href="#orders">Orders</a>
+    <a href="#agent">Agent</a>
   </nav>
 </header>
 
@@ -374,6 +452,28 @@ footer {
     </form>
     <ul class="examples" aria-label="Example order questions"></ul>
     <div id="oresults" aria-live="polite"></div>
+  </section>
+
+  <section class="agent" id="agent" aria-labelledby="agent-title">
+    <h2 id="agent-title">Ask the agent</h2>
+    <p class="lede">Some questions need both halves: a query for the facts, then the document that explains them. In the full app an agent built on Claude works out those steps itself. This page calls no AI service. Pick a question to replay a saved run, or ask your own: a question with no saved run runs live here, through the same SQL templates and document search as the sections above. Every query and passage you see is a real result from this page's data.</p>
+    <div class="controls">
+      <fieldset class="roles">
+        <legend>Ask as</legend>
+        <div class="seg"></div>
+        <span class="access"></span>
+      </fieldset>
+    </div>
+    <p class="anote">Each question was run once per role, through the app's real permission checks. On this page the switch is an illustration: the company is fictional and every saved run ships with the page. In the app, the database and the file server enforce the same limits.</p>
+    <div class="acomposer">
+      <form id="aask" autocomplete="off">
+        <label for="aq" class="visually-hidden">Question for the agent</label>
+        <input id="aq" name="aq" placeholder="Why is order 1042 late, and what should support do about it?" required maxlength="300">
+        <button type="submit" disabled>Ask</button>
+      </form>
+    </div>
+    <ul class="examples" aria-label="Questions with a saved run"></ul>
+    <div id="aresults" aria-live="polite"></div>
   </section>
 </main>
 

@@ -5,10 +5,13 @@
 //   python demo/build_index.py                      # writes index.json + golden.json
 //   npm install --prefix demo/.node @huggingface/transformers@3.7.1 sql.js@1.15.2
 //   node demo/check_search.mjs
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { Engine } from "./web/search.js";
 import { Translator, applyRole, loadContext, run, summarize } from "./web/orders.js";
+import { ROLES } from "./web/roles.js";
+import { SavedRuns } from "./web/agent.js";
+import { liveRun } from "./web/liverun.js";
 
 const require = createRequire(new URL("./.node/", import.meta.url));
 // Node resolves the package's CommonJS build; its exports sit on `default`.
@@ -79,6 +82,9 @@ for (const item of golden) {
     console.log(`${ok ? "PASS" : "FAIL"}  ${item.id.padEnd(30)} ${why}`);
     continue;
   }
+  // Agent cases are answered by Claude in the full app; the page replays
+  // saved runs of them, checked separately below.
+  if (item.mode === "agent") continue;
   if (item.mode === "find_file" || item.turns || NEEDS_A_MODEL.has(item.id)) continue;
   const r = await engine.search(item.question);
   const text = r.passages.map((p) => p.chunk.text).join("\n").toLowerCase();
@@ -98,6 +104,91 @@ for (const item of golden) {
   const top = r.passages[0];
   console.log(`${ok ? "PASS" : "FAIL"}  ${item.id.padEnd(30)} ${ok ? (top ? `${top.chunk.source} (${top.score.toFixed(2)})` : "refused") : why}`);
 }
+// ---- the saved agent runs ----------------------------------------------------
+// agent.json is built from the real agent loop by demo/agent_runs.py; its
+// --check covers freshness and per-role leaks. Checked here, in the browser's
+// own code: the page's document rules are the ones the runs were made under,
+// and a typed question replays the right saved answer or none.
+// A wrong answer is the failure that matters, so a paraphrase that finds
+// nothing is tolerated (down to MIN_PARAPHRASE_RECALL) and one that finds a
+// different question is not.
+const MIN_PARAPHRASE_RECALL = 0.5; // measured: 8 of 14 at the page's threshold
+const report = (ok, id, why) => {
+  checked++;
+  if (!ok) failed++;
+  console.log(`${ok ? "PASS" : "FAIL"}  ${id.padEnd(30)} ${why}`);
+};
+const agentFile = new URL("./web/agent.json", import.meta.url);
+if (!existsSync(agentFile)) {
+  report(false, "agent-runs", "demo/web/agent.json is missing; build it with python demo/agent_runs.py");
+} else {
+  const data = JSON.parse(readFileSync(agentFile));
+  for (const r of ROLES) {
+    const page = index.files.filter(r.can).sort().join(",");
+    const built = [...(data.roles[r.id]?.files ?? [])].sort().join(",");
+    report(page === built, `agent-role-${r.id}`, page === built ? `${page.split(",").length} files, as in agent.json`
+      : "roles.js and agent.json disagree on which files this role can open");
+  }
+  const saved = new SavedRuns(data, (t) => engine.embed(t));
+  let found = 0, paraphrases = 0;
+  for (const item of golden.filter((g) => g.mode === "agent" && g.demo)) {
+    const exact = await saved.match(item.question);
+    const runs = Object.keys(exact.question?.runs ?? {});
+    const complete = exact.question?.id === item.id && ROLES.every((r) => runs.includes(r.id));
+    report(complete, item.id, complete ? `runs for ${runs.join(", ")}` : "no saved run of this question for every role");
+    for (const text of item.paraphrases ?? []) {
+      paraphrases++;
+      const m = await saved.match(text);
+      if (m.question?.id === item.id) found++;
+      else if (m.question) report(false, item.id, `"${text}" replays the answer to ${m.question.id}`);
+    }
+    for (const text of item.look_alikes ?? []) {
+      const m = await saved.match(text);
+      report(!m.question, `${item.id}~`, m.question ? `"${text}" replays ${m.question.id} (${m.score.toFixed(2)})`
+        : `"${text.slice(0, 44)}" finds nothing (${m.score.toFixed(2)}, ${m.reason})`);
+    }
+  }
+  report(found >= paraphrases * MIN_PARAPHRASE_RECALL, "agent-paraphrase-recall", `${found} of ${paraphrases} rewordings found their question`);
+
+  // ---- live agent runs ------------------------------------------------------
+  // A question with no saved run runs live (liverun.js). The demo_live cases
+  // must not hit a saved run, and their live run must meet the same
+  // expectations the Python --live eval holds the real agent to.
+  for (const item of golden.filter((g) => g.mode === "agent" && g.demo_live)) {
+    const m = await saved.match(item.question);
+    if (m.question) { report(false, `${item.id}*`, `replays saved ${m.question.id} instead of running live`); continue; }
+    const r = ROLES.find((x) => x.id === (item.role ?? "admin"));
+    const live = await liveRun(item.question, { translator, octx, db, engine, roleId: r.id, allow: new Set(index.files.filter(r.can)) });
+    const [ok, why] = checkAgentRun(item, live);
+    report(ok, `${item.id}*`, ok ? `live as ${r.id}: ${live.steps.map((s) => s.tool).join(" → ") || "asked back"} · "${live.answer.slice(0, 50)}"` : why);
+  }
+}
+
+// eval/run_eval.py check_agent_result, for a run in the page's format.
+function checkAgentRun(item, run) {
+  const lower = run.answer.toLowerCase();
+  if (item.expect_clarification) return [run.clarification, `expected a clarifying question, got "${run.answer.slice(0, 60)}"`];
+  const worked = run.steps.filter((s) => s.ok);
+  const used = new Set(worked.map((s) => s.tool));
+  const missing = (item.expect_tools ?? []).filter((t) => !used.has(t));
+  if (missing.length) return [false, `no result from ${missing} (used ${[...used]})`];
+  const forbidden = (item.expect_no_tools ?? []).filter((t) => used.has(t));
+  if (forbidden.length) return [false, `${forbidden} returned a result and should not have`];
+  const rows = worked.flatMap((s) => s.detail.rows ?? []);
+  if (item.expect_row_values && !rows.some((row) => item.expect_row_values.every((v) => row.includes(v))))
+    return [false, `no query returned a row with ${JSON.stringify(item.expect_row_values)}`];
+  if (item.expect_sources_any && !item.expect_sources_any.some((f) => run.sources.includes(f)))
+    return [false, `cited ${run.sources}, expected one of ${item.expect_sources_any}`];
+  if (item.expect_answer_contains_all && !item.expect_answer_contains_all.every((k) => lower.includes(k.toLowerCase())))
+    return [false, `answer lacks one of ${item.expect_answer_contains_all}: "${run.answer.slice(0, 80)}"`];
+  if (item.expect_answer_contains_any && !item.expect_answer_contains_any.some((k) => lower.includes(k.toLowerCase())))
+    return [false, `answer has none of ${item.expect_answer_contains_any}`];
+  if (item.expect_answer_not_contains_any?.some((k) => lower.includes(k.toLowerCase())))
+    return [false, `answer leaks one of ${item.expect_answer_not_contains_any}`];
+  if (item.expect_refusal && !lower.includes("don't have information")) return [false, `expected a refusal, got "${run.answer.slice(0, 60)}"`];
+  return [true, ""];
+}
+
 console.log(`\n${checked - failed} passed, ${failed} failed`);
 // Release the ONNX sessions first: exiting with them open aborts the
 // process in onnxruntime's teardown, and a crash would fail CI on a pass.

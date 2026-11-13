@@ -1,9 +1,10 @@
 """Streamlit UI. Deliberately thin: every decision lives in rag.py and search/.
 
-Three modes, each a single call into the engine:
-    Ask about content -> rag.answer_question       (RAG over documents)
-    Ask about orders  -> rag.answer_order_question (NL -> guarded SQL)
-    Find a file       -> search.metadata            (file names, no API)
+Four modes, each a single call into the engine:
+    Ask about content -> rag.answer_question         (RAG over documents)
+    Ask about orders  -> rag.answer_order_question   (NL -> guarded SQL)
+    Ask the agent     -> agent.answer_agent_question (several steps over both)
+    Find a file       -> search.metadata              (file names, no API)
 
 This file owns only what is per-session: NAS login (auth/smb.py; the password
 never leaves session memory), the per-session rate limit, chat history,
@@ -148,10 +149,12 @@ with st.sidebar:
     st.divider()
     mode = st.radio(
         "Mode",
-        ["Ask about content", "Ask about orders", "Find a file"],
+        ["Ask about content", "Ask about orders", "Ask the agent", "Find a file"],
         help="Content search reads inside documents. File search matches "
              "names and folders, and covers files whose contents aren't "
-             "indexed (images, drawings, archives).",
+             "indexed (images, drawings, archives). The agent takes several "
+             "steps across documents and orders; it is slower and costs more "
+             "per question.",
     )
 
     connection = meta_db()
@@ -214,14 +217,20 @@ def order_role_for(username):
     return orders.role_for_groups(acl.groups_for_user(username))
 
 
+ROLE_SCOPE = {"admin": "Every order and column.", "engineer": "Every order; emails and prices hidden.",
+              "contractor": "West-region orders only; emails and prices hidden.",
+              "none": "No access to order data."}
+
+
+def current_order_role():
+    return order_role_for(user) if nas_session else os.environ.get("RAG_ORDER_ROLE", "admin")
+
+
 def render_orders():
     from search import orders
 
-    role = order_role_for(user) if nas_session else os.environ.get("RAG_ORDER_ROLE", "admin")
-    st.caption(f"Order questions run as **{role}**. "
-               + {"admin": "Every order and column.", "engineer": "Every order; emails and prices hidden.",
-                  "contractor": "West-region orders only; emails and prices hidden.",
-                  "none": "No access to order data."}.get(role, ""))
+    role = current_order_role()
+    st.caption(f"Order questions run as **{role}**. " + ROLE_SCOPE.get(role, ""))
     question = st.text_input("Ask about orders", placeholder="Why is order 1042 late?")
     if not question:
         return
@@ -250,6 +259,108 @@ def render_orders():
     if result["why"]:
         st.markdown(f"**Why** · from `{result['why']['source']}`")
         st.markdown("> " + result["why"]["text"].replace("\n", "\n> "))
+
+
+# --- agent ----------------------------------------------------------------
+# Multi-step questions across documents and orders (agent.py). The trace
+# shows each step the agent took - the SQL it ran, the passages it read -
+# so an answer can be checked rather than trusted.
+STEP_LABELS = {"query_orders": ("Queried orders", "row"), "search_docs": ("Searched documents", "passage"),
+               "find_file": ("Looked for files", "file")}
+
+
+# True if this session may ask another question; records the request if so.
+# Shared by the agent and (inline, below) the content chat's limit.
+def allow_request():
+    now = time.time()
+    recent = [t for t in st.session_state.get("request_times", []) if now - t < RATE_LIMIT_WINDOW_SECONDS]
+    allowed = len(recent) < RATE_LIMIT_MAX_REQUESTS
+    st.session_state.request_times = recent + [now] if allowed else recent
+    return allowed
+
+
+def render_step(step):
+    label, unit = STEP_LABELS.get(step["tool"], (step["tool"], "result"))
+    detail = step["detail"]
+    count = step["count"]
+    outcome = f"{count} {unit}{'' if count == 1 else 's'}" if step["ok"] else "refused"
+    with st.expander(f"{label} · {outcome} · {step['ms']} ms"):
+        if detail.get("error"):
+            st.caption(detail["error"])
+        if detail.get("sql"):
+            st.code(detail["sql"], language="sql")
+            hidden = set(detail["hidden"])
+            st.dataframe(
+                [{c: ("hidden" if c in hidden else v) for c, v in zip(detail["columns"], row)}
+                 for row in detail["rows"]],
+                hide_index=True, use_container_width=True,
+            )
+        elif step["tool"] == "search_docs":
+            st.caption(f"Searched for: {step['args'].get('query', '')}")
+            for passage in detail.get("passages", []):
+                st.markdown(f"`{passage['source']}`")
+                st.markdown("> " + passage["text"].replace("\n", "\n> "))
+        for found in detail.get("files", []):
+            st.code(found["path"], language=None)
+
+
+def render_agent_message(msg):
+    for step in msg.get("steps", []):
+        render_step(step)
+    st.markdown(msg["content"])
+    render_sources(msg.get("sources"))
+
+
+def render_agent():
+    import agent
+
+    chain = load_chain()
+    if chain is None:
+        st.warning("Nothing indexed yet. Run `python -m indexer` on the server.")
+        return
+
+    role = current_order_role()
+    st.caption(f"Works in steps across documents and orders, as **{role}**. {ROLE_SCOPE.get(role, '')} "
+               f"At most {agent.MAX_STEPS} steps per question.")
+    messages = st.session_state.setdefault("agent_messages", [])
+    for msg in messages:
+        with st.chat_message(msg["role"]):
+            render_agent_message(msg)
+
+    question = st.chat_input("Which on-hold orders are late, and what does the playbook say to do?")
+    if not question:
+        return
+    chat_history = [(HumanMessage if m["role"] == "user" else AIMessage)(content=m["content"])
+                    for m in messages][-HISTORY_TURNS * 2:]
+    messages.append({"role": "user", "content": question})
+    with st.chat_message("user"):
+        st.markdown(question)
+
+    with st.chat_message("assistant"):
+        if not allow_request():
+            reply = {"role": "assistant", "content": f"Rate limit reached ({RATE_LIMIT_MAX_REQUESTS} "
+                                                     "questions per hour). Please try again later."}
+            st.error(reply["content"])
+        else:
+            trace = st.container()
+
+            def show_step(step):
+                with trace:
+                    render_step(step)
+
+            with st.spinner("Working through it..."):
+                result = agent.answer_agent_question(
+                    question, chat_history, chain, role, access_check=access_checker(), user=user,
+                    log_context={"user": user, "mode": "agent"}, on_step=show_step, file_index=meta_db(),
+                )
+            reply = {"role": "assistant", "content": result["answer"], "steps": result["steps"],
+                     "sources": sorted(result["sources_used"])}
+            if (result["guardrail"] or "").startswith("api_error"):
+                st.error(result["answer"])
+            else:
+                st.markdown(result["answer"])
+                render_sources(reply["sources"])
+    messages.append(reply)
 
 
 # --- content chat ---------------------------------------------------------
@@ -373,5 +484,7 @@ if mode == "Find a file":
     render_file_search()
 elif mode == "Ask about orders":
     render_orders()
+elif mode == "Ask the agent":
+    render_agent()
 else:
     render_chat()
