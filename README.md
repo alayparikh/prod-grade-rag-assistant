@@ -2,7 +2,7 @@
 
 Chat with your own PDFs/Word/text files. Embedding, keyword search and reranking run locally (free); Claude is called only to grade relevance and write the answer, and not at all in offline mode.
 
-**[▶ Try the live demo](https://alayparikh.github.io/prod-grade-rag-assistant/)**: a fictional company's handbook, runbooks and resumes, searched entirely in your browser (no server, no AI calls, no sign-in). How it works: [demo/README.md](demo/README.md).
+**[▶ Try the live demo](https://alayparikh.github.io/prod-grade-rag-assistant/)**: a fictional company's handbook, runbooks and resumes, searched entirely in your browser (no server, no AI calls, no sign-in). It also answers order questions with SQL, and has an agent chat (bottom right) for questions that need both. How it works: [demo/README.md](demo/README.md).
 
 ## Architecture
 
@@ -157,9 +157,12 @@ chooses the steps from five tools (`agent.py`): `search_docs`, `query_orders`,
   never rows or passage text.
 - **Opt-in.** It makes several model calls per question, so the one-shot modes
   stay the default for questions they can answer.
-- **Demo:** no model. Seven questions replay saved runs per role; any other
+- **Demo:** no model. The agent is a chat panel docked bottom-right with its
+  own role switch. Seven questions replay saved runs per role; any other
   question runs live in the browser through the same SQL templates and document
-  search as the Orders section (see [demo/README.md](demo/README.md)).
+  search as the Orders section. When it asks back ("Which customer's orders?"),
+  a short reply completes the question; no other context carries between
+  messages (see [demo/README.md](demo/README.md)).
 
 **Ask about content** is the RAG path. **Find a file** matches names and
 folder paths through SQLite FTS5 — it costs nothing per query and covers

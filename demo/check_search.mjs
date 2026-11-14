@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import { Engine } from "./web/search.js";
 import { Translator, applyRole, loadContext, run, summarize } from "./web/orders.js";
 import { ROLES } from "./web/roles.js";
-import { SavedRuns } from "./web/agent.js";
+import { SavedRuns, followUp } from "./web/agent.js";
 import { liveRun } from "./web/liverun.js";
 
 const require = createRequire(new URL("./.node/", import.meta.url));
@@ -162,6 +162,26 @@ if (!existsSync(agentFile)) {
     const [ok, why] = checkAgentRun(item, live);
     report(ok, `${item.id}*`, ok ? `live as ${r.id}: ${live.steps.map((s) => s.tool).join(" → ") || "asked back"} · "${live.answer.slice(0, 50)}"` : why);
   }
+
+  // ---- the chat's follow-up rule ----------------------------------------------
+  // The agent asks back, and a short reply completes the question; a new
+  // question is left alone and never inherits the old one.
+  const admin = ROLES.find((x) => x.id === "admin");
+  const live = (q) => liveRun(q, { translator, octx, db, engine, roleId: admin.id, allow: new Set(index.files.filter(admin.can)) });
+  const opening = "Where are my orders?";
+  const first = await live(opening);
+  report(first.clarification, "chat-asks-back", first.clarification ? `"${first.answer}"` : "expected a question back");
+  const customer = db.exec("SELECT name FROM customers ORDER BY id LIMIT 1")[0].values[0][0];
+  const joined = followUp(opening, customer);
+  const second = await live(joined);
+  const answered = !second.clarification && second.steps[0]?.tool === "query_orders" && second.steps[0].count > 0;
+  report(answered, "chat-follow-up", answered ? `"${customer}" → ${second.steps[0].count} rows` : `"${joined}" did not query that customer's orders`);
+  // A document answer is the part of the passage that answers, not its opening.
+  const linkedin = await live("What is Sam Rivera's LinkedIn?");
+  const linked = linkedin.answer.includes("linkedin.example.com/in/sam-rivera");
+  report(linked, "chat-answer-from-passage", linked ? `"${linkedin.answer}"` : `answered "${linkedin.answer.slice(0, 60)}"`);
+  const fresh = "How long are database backups kept?";
+  report(followUp(opening, fresh) === fresh, "chat-new-question", "a new question does not inherit the pending one");
 }
 
 // eval/run_eval.py check_agent_result, for a run in the page's format.

@@ -57,7 +57,7 @@ Rules for all code:
 | Indexer | Single process | Corpus too large for one pass | Per-file jobs on a queue (SQS/Kafka/Celery) |
 | NL to SQL | One forced tool call + sqlglot guard | Multi-step / mixed questions | Agent loop with `query_orders` / `search_docs` tools, same guards inside each tool (built: `agent.py`, next row) |
 | Agent | Opt-in "Ask the agent" mode: bounded tool loop (`agent.py`), no answer cache | Users pick the wrong mode, or agent traffic makes repeat questions costly | Router sends multi-step questions to the agent; answers cached per user + index version + orders snapshot in the shared cache |
-| Demo agent answers | Saved example runs per role built by `demo/agent_runs.py` (real tools, scripted steps and answers); any other question runs live in the browser with fixed steps (`demo/web/liverun.js`: SQL templates + policy search, no model) | Visitors need questions planned beyond the fixed steps | Hosted agent endpoint with server-side key, spend cap and rate limit |
+| Demo agent answers | Chat panel docked bottom-right (`demo/web/agent.js`); a short reply to a question the agent asked back is joined to it, no other context carried. Saved example runs per role built by `demo/agent_runs.py` (real tools, scripted steps and answers); any other question runs live in the browser with fixed steps (`demo/web/liverun.js`: SQL templates + policy search, no model) | Visitors need questions planned beyond the fixed steps, or follow-ups that depend on earlier turns | Hosted agent endpoint with server-side key, spend cap and rate limit |
 | Tracing | JSON logs, optional self-hosted Langfuse | Production traffic | Central log pipeline + self-hosted tracing |
 
 Keep this table current when a component changes.

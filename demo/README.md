@@ -25,11 +25,11 @@ halves never hold different numbers.
 |---|---|
 | `build_index.py` | Builds `web/index.json` from `eval/fixtures/docs/` (never from `docs/`), and `golden.json` for the check |
 | `web/index.html` | Page structure and all styles |
-| `web/scene.js` | The 3D hero (three.js): the word DEMO made of paper slips, posed five ways and blended by scroll position: corpus, two searches, ranked list, and the orders table with its answering row |
+| `web/scene.js` | The 3D hero (three.js): the word DEMO made of paper slips, posed six ways and blended by scroll position: the word, corpus, two searches, ranked list, the orders table, and a 3D chat panel like the page's own, onto which the slips land one line at a time (question, order query, document search, answer). The scene follows the scroll with a short lag; the panel is placed to fit the screen (beside the caption when wide, above it when narrow) |
 | `web/search.js` | The query pipeline: embedding, BM25 keyword search, rank fusion, cross-encoder rerank, cutoff |
 | `web/app.js` | Wires scroll to the scene, and the search box to `search.js`; renders results |
 | `web/orders.js` | Order questions: query types, value extraction, per-role SQL views |
-| `web/agent.js` | The agent section: matches a typed question to a saved one, and plays a saved run back as a tape of steps |
+| `web/agent.js` | The agent chat (docked bottom-right): matches a typed question to a saved one, joins a reply to the question the agent asked back about, and draws each run as a chat reply (its steps, then the answer) |
 | `web/liverun.js` | Runs an agent question with no saved run, live in the browser: SQL templates, then the policy search, no model |
 | `web/roles.js` | Which role can open which documents; shared by the page and the check |
 | `agent_runs.py` | Builds `web/agent.json`: each agent question run once per role through the real agent loop; `--check` verifies the committed file |
@@ -107,9 +107,25 @@ every deploy. The Python app answers open-ended order questions with Claude
 
 ## Ask the agent (`agent.js`)
 
+The agent is a chat panel docked at the bottom right ("Ask the agent", or
+"Agent" in the top bar), open from any section. Each reply lists the steps
+taken, with the SQL, rows and passages folded under each step, then the answer
+and a label saying which kind of run it was. The panel has its own role switch, separate from the page's "Search as":
+changing it mid-conversation adds a note and applies to the next message,
+and neither switch moves the other. The conversation lives in the page only.
+
 The full app's agent (`agent.py`) calls Claude to choose its steps. This page
 calls nothing, so it does two things instead: a question with a saved run
 replays it, and any other question runs live, here, with fixed steps.
+
+**Back and forth.** When the agent asks back ("Which customer's orders?"), a
+short reply that is not itself a question ("Cobalt Bay Distribution", at most
+8 words) is joined to the question it was asked about and run again; anything
+else starts a new question. That is the only context carried between
+messages: with no model, "and what about 1043?" is read as a new question on
+its own. The full app's agent carries the whole conversation.
+`check_search.mjs` holds the rule (asks back, reply answers, new question
+doesn't inherit).
 
 **Live runs** (`liverun.js`, labelled "Live run"). The same two halves as the
 sections above, joined: the question goes through the SQL translator under
@@ -118,6 +134,10 @@ found by document search under the role's document access (why late, then
 one search per hold reason, at most 3); anything that isn't an order
 question is a document search. The answer is the translator's sentence plus
 the top passage of each search, so it says nothing the steps didn't return.
+For a document question, the answer is the pieces of the top passage
+(sentences, lines, or fields of an `a | b | c` line; at most 3) that share
+the most words with the question, so "What is Sam Rivera's LinkedIn?" gets
+the LinkedIn field rather than the resume's opening lines.
 A role with no order access gets the full app's "no information" reply.
 
 **Saved runs:**
@@ -157,7 +177,7 @@ rules match the ones the runs were made under, that every question has a run
 for every role, that no rewording replays a different question, that no
 look-alike replays anything, and that the golden set's `demo_live` cases run
 live and meet the same expectations the Python `--live` eval holds the real
-agent to (60 checks in all).
+agent to, and the chat's follow-up rule (64 checks in all).
 
 ## What it cannot do
 

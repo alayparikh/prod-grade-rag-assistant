@@ -5,7 +5,7 @@
     scene.js   the 3D hero and scroll story
     search.js  document search (embeddings, BM25, rank fusion, reranker)
     orders.js  order questions -> parameterized SQL over sql.js
-    agent.js   plays back saved runs of the full app's agent (agent.json)
+    agent.js   the agent chat: plays back saved runs of the full app's agent (agent.json)
     liverun.js runs any other agent question live: SQL templates + document search
     roles.js   which role can open which documents
     app.js     wiring, failure cases, rendering
@@ -68,7 +68,7 @@ a { color: inherit; }
 .bar a:hover, .bar a:focus-visible { border-bottom-color: currentColor; }
 
 /* ---- scroll story -------------------------------------------------- */
-.story { height: 520vh; position: relative; }
+.story { height: 620vh; position: relative; }
 .stage { position: sticky; top: 0; height: 100vh; height: 100svh; overflow: hidden; }
 .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .fallback-word {
@@ -79,12 +79,15 @@ a { color: inherit; }
 .no-webgl .fallback-word { display: grid; }
 
 .hero-copy {
-  position: absolute; left: 0; right: 0; bottom: clamp(32px, 9vh, 96px); text-align: center;
+  position: absolute; left: 0; right: 0; bottom: clamp(20px, 4vh, 48px); text-align: center;
   padding: 0 var(--gutter); transition: opacity .3s;
 }
-.hero-copy p { margin: 0 auto 18px; max-width: 34ch; font-size: clamp(17px, 2vw, 21px); }
+.hero-copy p { margin: 0 auto 14px; max-width: 62ch; font-size: clamp(16px, 1.7vw, 19px); line-height: 1.45; }
+.jump { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 0 0 16px; }
+.jump a { padding: 10px 16px; border: 1px solid var(--graphite); background: var(--slip); font: 500 15px/1.2 var(--body); text-decoration: none; transition: background .18s, color .18s; }
+.jump a:hover { background: var(--graphite); color: var(--slip); }
 .cue { font: 400 11px/1 var(--mono); text-transform: uppercase; letter-spacing: .08em; color: var(--steel); }
-.cue::after { content: ""; display: block; width: 1px; height: 36px; margin: 12px auto 0; background: var(--steel); animation: cue 1.8s ease-in-out infinite; transform-origin: top; }
+.cue::after { content: ""; display: block; width: 1px; height: 24px; margin: 10px auto 0; background: var(--steel); animation: cue 1.8s ease-in-out infinite; transform-origin: top; }
 @keyframes cue { 0%, 100% { transform: scaleY(.3); } 50% { transform: scaleY(1); } }
 
 .steps { list-style: none; margin: 0; padding: 0; }
@@ -102,8 +105,9 @@ a { color: inherit; }
 .step p { margin: 0; }
 .k-meaning, .k-keyword { font-weight: 600; padding: 0 3px; color: var(--slip); }
 .k-meaning { background: var(--violet); } .k-keyword { background: var(--teal); }
+.k-orders { font-weight: 600; padding: 0 3px; color: var(--slip); background: var(--amber); }
 .step[data-at="3"] { border-left-color: var(--cobalt); }
-.step:last-child { border-left-color: var(--amber); }
+.step[data-at="4"] { border-left-color: var(--amber); }
 
 /* ---- console ------------------------------------------------------- */
 .console { padding: clamp(64px, 10vw, 128px) var(--gutter) 64px; max-width: 920px; margin: 0 auto; }
@@ -266,77 +270,95 @@ form button:disabled { background: var(--steel-soft); cursor: progress; }
 .olanes { grid-template-columns: repeat(3, 1fr); }
 @media (max-width: 760px) { .answer-grid.with-why, .olanes { grid-template-columns: 1fr; } }
 
-/* ---- agent ------------------------------------------------------------------ */
-/* A saved run, played back as a tape: one row per step, its place in the run
-   down the left edge, each step in the colour the page already gives that kind of search. */
-.agent { padding: clamp(64px, 10vw, 120px) var(--gutter) 64px; max-width: 1020px; margin: 0 auto; border-top: 2px solid var(--graphite); }
-.agent > h2 { font: 800 clamp(52px, 9vw, 104px)/.88 var(--display); text-transform: uppercase; margin: 0 0 18px; }
-.anote { font: 400 12px/1.6 var(--mono); color: var(--steel); max-width: 74ch; margin: 0 0 22px; }
-
-/* The question bar stays in view while the tape scrolls beneath it, so it is
-   glass: the step colours passing under it show through. Only this one layer
-   is translucent; everything that has to be read sits on solid ground. */
-.acomposer {
-  position: sticky; top: 46px; z-index: 5; margin: 0 -12px; padding: 12px;
-  background: color-mix(in srgb, var(--aluminum) 62%, transparent);
-  -webkit-backdrop-filter: blur(16px) saturate(1.6); backdrop-filter: blur(16px) saturate(1.6);
-  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 70%, transparent),
-              inset 0 0 0 1px color-mix(in srgb, #fff 35%, transparent),
-              0 14px 28px -20px color-mix(in srgb, var(--graphite) 70%, transparent);
+/* ---- agent chat ------------------------------------------------------------- */
+/* A chat panel docked bottom-right, open from any section. Each reply lists the
+   steps the agent took, in the colour the page already gives that kind of
+   search, then the answer. */
+.chat-launch {
+  position: fixed; right: 20px; bottom: 20px; z-index: 20; display: flex; align-items: center; gap: 10px;
+  min-height: 52px; padding: 0 20px; border: 2px solid var(--graphite); background: var(--graphite); color: var(--slip);
+  font: 700 20px/1 var(--display); text-transform: uppercase; letter-spacing: .04em; cursor: pointer;
+  box-shadow: 0 16px 30px -16px color-mix(in srgb, var(--graphite) 80%, transparent); transition: background .18s, border-color .18s;
 }
-.acomposer form { background: color-mix(in srgb, var(--slip) 82%, transparent); }
-.agent .examples { margin: 16px 0 36px; }
-.agent .examples button { min-height: 44px; text-align: left; transition: background .18s, border-color .18s, color .18s; }
-.agent .examples button[aria-pressed="true"] { background: var(--graphite); border-color: var(--graphite); color: var(--slip); }
+.chat-launch::before { content: ""; width: 10px; height: 10px; background: var(--teal); }
+.chat-launch:hover { background: var(--cobalt); border-color: var(--cobalt); }
+.chat-launch:focus-visible, .chat-head button:focus-visible { outline: 2px solid var(--cobalt); outline-offset: 2px; }
+.chat-launch[hidden], .chat[hidden] { display: none; }
 
-.amatch { border-left: 3px solid var(--cobalt); background: var(--slip); padding: 14px 18px; margin: 0 0 26px; max-width: 68ch; }
-.tape { list-style: none; margin: 0; padding: 0; }
-.tstep, .averdict { --c: var(--graphite); display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 0 34px; position: relative; padding-bottom: 26px; }
-/* The tape's spine, drawn per row so it stops at the answer. */
-.tstep::before { content: ""; position: absolute; left: 80px; top: 6px; bottom: -6px; width: 2px; background: var(--graphite); }
-.tstep::after, .averdict::after { content: ""; position: absolute; left: 75px; top: 5px; width: 12px; height: 12px; background: var(--c); }
+.chat {
+  position: fixed; right: 20px; bottom: 20px; z-index: 20; display: flex; flex-direction: column;
+  width: min(420px, calc(100vw - 32px)); height: min(660px, calc(100dvh - 86px));
+  background: var(--aluminum); border: 2px solid var(--graphite);
+  box-shadow: 0 28px 60px -24px color-mix(in srgb, var(--graphite) 80%, transparent);
+}
+.chat.wide { width: min(780px, calc(100vw - 32px)); height: calc(100dvh - 86px); }
+.chat-head { display: flex; align-items: center; gap: 4px; padding: 6px 6px 6px 16px; background: var(--graphite); color: var(--slip); }
+.chat-head > div { flex: 1; min-width: 0; }
+.chat-head h2 { font: 700 24px/1 var(--display); text-transform: uppercase; letter-spacing: .02em; margin: 0 0 3px; }
+.chat-state { font: 400 11px/1.3 var(--mono); color: var(--steel-soft); }
+.chat-state::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; background: var(--amber); }
+.chat-state.on::before { background: var(--teal); }
+.chat-head button { width: 44px; height: 44px; border: 0; background: none; color: inherit; font: 400 20px/1 var(--mono); cursor: pointer; }
+.chat-head button:hover { background: color-mix(in srgb, var(--slip) 14%, transparent); }
+.chat-role { padding: 10px 16px; border-bottom: 1px solid var(--steel-soft); background: var(--slip); }
+.chat-role .roles { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.chat-role legend { float: left; margin: 0 12px 0 0; line-height: 30px; }
+.chat-role .seg span { padding: 6px 10px; font-size: 13px; }
+.chat-role .access { flex-basis: 100%; margin-top: 2px; font-size: 11px; }
+
+.chat-log { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+/* Messages keep their height; the log scrolls instead of squeezing them. */
+.chat-log > * { flex-shrink: 0; }
+.msg { max-width: 88%; padding: 10px 14px; font: 400 15px/1.5 var(--body); overflow-wrap: anywhere; }
+.msg.user { align-self: flex-end; background: var(--graphite); color: var(--slip); }
+.msg.agent { align-self: flex-start; min-width: 0; max-width: 96%; background: var(--slip); border: 1px solid var(--steel-soft); }
+.msg p { margin: 0 0 8px; }
+.msg p:last-child { margin-bottom: 0; }
+.chat-fine { font: 400 11px/1.6 var(--mono); color: var(--steel); }
+.chat-note { align-self: center; margin: 0; font: 400 11px/1.5 var(--mono); color: var(--steel); text-align: center; }
+.chat .examples { margin: 12px 0 0; gap: 6px; }
+.chat .examples button { min-height: 36px; padding: 6px 10px; font-size: 13px; line-height: 1.35; text-align: left; }
+.chat form { border-width: 2px 0 0; }
+.chat form input { padding: 14px 16px; font-size: 15px; min-width: 0; }
+.chat form button { padding: 0 18px; font-size: 18px; }
+
+.typing { display: inline-flex; gap: 5px; padding: 6px 0; }
+.typing i { width: 7px; height: 7px; background: var(--steel); animation: typing 1s infinite both; }
+.typing i:nth-child(2) { animation-delay: .15s; }
+.typing i:nth-child(3) { animation-delay: .3s; }
+@keyframes typing { 0%, 60%, 100% { opacity: .25; } 30% { opacity: 1; } }
+
+.amatch { font: 400 11px/1.5 var(--mono); color: var(--steel); }
+.tape { list-style: none; margin: 0 0 10px; padding: 0; }
+.tstep { --c: var(--graphite); border-left: 3px solid var(--c); padding: 2px 0 2px 10px; margin-bottom: 8px; }
 .tstep.from-docs { --c: var(--violet); }
 .tstep.from-orders { --c: var(--amber); }
 .tstep.refused { --c: var(--red); }
-.tat { font: 500 11px/2 var(--mono); letter-spacing: .04em; color: var(--steel); text-align: right; white-space: nowrap; }
-.tbody h4, .averdict h4 { font: 700 26px/1 var(--display); text-transform: uppercase; letter-spacing: .01em; margin: 0 0 6px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
-.tbody h4 em { font: 500 11px/1 var(--mono); font-style: normal; letter-spacing: .06em; color: var(--c); }
-.tbody q { display: block; font: 400 13px/1.5 var(--mono); color: var(--steel); quotes: "“" "”"; }
-.tbody summary { cursor: pointer; display: inline-block; padding: 13px 0; font: 500 12px/1.5 var(--mono); list-style: none; border-bottom: 1px solid transparent; }
-.tbody summary::-webkit-details-marker { display: none; }
-.tbody summary::before { content: "+ "; }
-.tbody details[open] summary::before { content: "− "; }
-.tbody summary:hover { color: var(--cobalt); }
-.tbody .sqlblock { margin: 4px 0 12px; }
-.tbody .sqlblock pre { padding-bottom: 18px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.tbody blockquote { margin: 4px 0 10px; padding: 12px 16px; background: var(--slip); border-left: 3px solid var(--violet); font-size: 15px; white-space: pre-line; max-width: 72ch; }
-.tbody cite { display: block; font: 500 11px/1.4 var(--mono); font-style: normal; letter-spacing: .04em; color: var(--steel); margin-bottom: 6px; }
-.tnote { font: 400 12px/1.5 var(--mono); color: var(--steel); margin: 4px 0 0; }
-.tape-empty { margin: 0 0 26px; }
+.tstep h4 { font: 500 12px/1.5 var(--mono); margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+.tstep h4 em { font-style: normal; color: var(--c); }
+.tat { font: 400 11px/1.5 var(--mono); color: var(--steel); }
+.tstep q { display: block; font: 400 12px/1.5 var(--mono); color: var(--steel); quotes: "“" "”"; }
+.tstep summary { cursor: pointer; display: inline-block; padding: 6px 0; font: 400 11px/1.5 var(--mono); color: var(--steel); list-style: none; }
+.tstep summary::-webkit-details-marker { display: none; }
+.tstep summary::before { content: "+ "; }
+.tstep details[open] summary::before { content: "− "; }
+.tstep summary:hover { color: var(--cobalt); }
+.tstep .sqlblock { margin: 2px 0 8px; }
+.tstep .sqlblock pre { padding: 12px 14px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tstep .tablewrap table { font-size: 12px; }
+.tstep blockquote { margin: 2px 0 8px; padding: 10px 12px; background: var(--aluminum); border-left: 3px solid var(--violet); font-size: 13px; white-space: pre-line; }
+.tstep cite { display: block; font: 500 10.5px/1.4 var(--mono); font-style: normal; color: var(--steel); margin-bottom: 4px; }
+.tnote { font: 400 12px/1.5 var(--mono); color: var(--steel); margin: 2px 0 0; }
+.averdict.asked { border-left: 3px solid var(--amber); padding-left: 10px; }
+.asrc { font: 400 11px/2.1 var(--mono); color: var(--steel); margin: 6px 0 0; }
+.asrc .file { color: var(--graphite); background: var(--aluminum); border: 1px solid var(--steel-soft); padding: 2px 6px; white-space: nowrap; }
+.astamp { margin: 10px 0 0; padding-top: 8px; border-top: 1px dashed var(--steel-soft); font: 400 10.5px/1.6 var(--mono); color: var(--steel); }
+.astamp b { font-weight: 500; text-transform: uppercase; letter-spacing: .06em; color: var(--graphite); }
 
-.averdict { --c: var(--cobalt); padding-bottom: 0; }
-.averdict.asked { --c: var(--amber); }
-.averdict::after { left: 73px; top: 3px; width: 16px; height: 16px; }
-.averdict h4 { color: var(--c); }
-.atext { font: 500 clamp(19px, 2.2vw, 24px)/1.4 var(--body); max-width: 56ch; }
-.atext p { margin: 0 0 10px; }
-.asrc { font: 400 12px/2 var(--mono); color: var(--steel); margin: 8px 0 0; }
-.asrc .file { color: var(--graphite); background: var(--slip); border: 1px solid var(--steel-soft); padding: 2px 7px; white-space: nowrap; }
-.astamp { margin: 30px 0 0; padding-top: 14px; border-top: 1px dashed var(--steel); font: 400 12px/1.7 var(--mono); color: var(--steel); }
-.astamp b { font-weight: 500; text-transform: uppercase; letter-spacing: .08em; color: var(--graphite); border: 1.5px solid var(--graphite); padding: 2px 7px; margin-right: 8px; }
-
-/* Steps arrive in the order they were taken. They are laid out from the
-   start and only faded in, so the page never moves during playback. */
-.tstep, .averdict, .astamp { transition: opacity .35s cubic-bezier(.22, 1, .36, 1), transform .35s cubic-bezier(.22, 1, .36, 1); }
-.pending { opacity: 0; transform: translateY(10px); }
-
-@media (max-width: 760px) {
-  .acomposer { position: static; margin: 0; padding: 0; background: none; box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; }
-  .tstep, .averdict { grid-template-columns: minmax(0, 1fr); padding-left: 28px; }
-  .tstep::before { left: 5px; }
-  .tstep::after { left: 0; }
-  .averdict::after { left: -2px; }
-  .tat { text-align: left; }
+@media (max-width: 640px) {
+  .chat-launch { right: 12px; bottom: 12px; }
+  .chat, .chat.wide { inset: 46px 0 0 0; width: auto; height: auto; border-width: 2px 0 0; }
+  .chat-size { display: none; }
 }
 
 footer {
@@ -356,7 +378,8 @@ footer {
   html { scroll-behavior: auto; }
   .cue::after { animation: none; }
   .step { transition: none; }
-  .tstep, .averdict, .astamp, .agent .examples button { transition: none; }
+  .chat-launch { transition: none; }
+  .typing i { animation: none; opacity: .6; }
 }
 </style>
 </head>
@@ -378,29 +401,39 @@ footer {
       <canvas aria-hidden="true"></canvas>
       <div class="fallback-word" aria-hidden="true">DEMO</div>
       <div class="hero-copy">
-        <p>Search a robotics company's documents and ask about its orders in plain English. Every step runs in your browser.</p>
-        <span class="cue">Scroll to watch a search</span>
+        <p>A working demo of an assistant for a company's documents and orders. Search the files, ask about orders in plain English, or ask the agent to do both. It runs in your browser: no sign-up, no AI service.</p>
+        <div class="jump">
+          <a href="#try">Search the documents</a>
+          <a href="#orders">Ask about orders</a>
+          <a href="#agent">Ask the agent</a>
+        </div>
+        <span class="cue">Or scroll to see how it works</span>
       </div>
       <ol class="steps">
         <li class="step" data-at="1">
-          <b>Step 1 of 4 · The corpus</b>
+          <b>Step 1 of 5 · The corpus</b>
           <h2 id="corpus-count">55 passages, 18 files</h2>
           <p>Product and order docs, shipping and support policies, engineering runbooks and five resumes, cut at their headings so every passage knows which section it came from<span id="orders-count">. Beside them: an orders database of 80 orders</span>.</p>
         </li>
         <li class="step" data-at="2">
-          <b>Step 2 of 4 · Two searches</b>
+          <b>Step 2 of 5 · Two searches</b>
           <h2>Meaning and exact words</h2>
           <p>One search matches what your question <span class="k-meaning">means</span>, the other matches the <span class="k-keyword">words in it</span>. Their rankings are merged into one candidate list.</p>
         </li>
         <li class="step" data-at="3">
-          <b>Step 3 of 4 · Rerank</b>
+          <b>Step 3 of 5 · Rerank</b>
           <h2>A second read</h2>
           <p>A second model reads each candidate beside your question and scores it. The top three are shown. If none scores high enough, the answer is that the documents don't say.</p>
         </li>
         <li class="step" data-at="4">
-          <b>Step 4 of 4 · Orders</b>
+          <b>Step 4 of 5 · Orders</b>
           <h2>Or straight to the database</h2>
           <p>Questions about orders become a SQL query instead. One row answers it, and the policy that explains it comes from the documents.</p>
+        </li>
+        <li class="step" data-at="5">
+          <b>Step 5 of 5 · The agent</b>
+          <h2>Both, in one conversation</h2>
+          <p>Some questions need the <span class="k-orders">query</span> and the <span class="k-meaning">document</span>. The agent runs each step in turn, shows what it read, then answers. Ask it from the button at the bottom right.</p>
         </li>
       </ol>
     </div>
@@ -453,28 +486,6 @@ footer {
     <ul class="examples" aria-label="Example order questions"></ul>
     <div id="oresults" aria-live="polite"></div>
   </section>
-
-  <section class="agent" id="agent" aria-labelledby="agent-title">
-    <h2 id="agent-title">Ask the agent</h2>
-    <p class="lede">Some questions need both halves: a query for the facts, then the document that explains them. In the full app an agent built on Claude works out those steps itself. This page calls no AI service. Pick a question to replay a saved run, or ask your own: a question with no saved run runs live here, through the same SQL templates and document search as the sections above. Every query and passage you see is a real result from this page's data.</p>
-    <div class="controls">
-      <fieldset class="roles">
-        <legend>Ask as</legend>
-        <div class="seg"></div>
-        <span class="access"></span>
-      </fieldset>
-    </div>
-    <p class="anote">Each question was run once per role, through the app's real permission checks. On this page the switch is an illustration: the company is fictional and every saved run ships with the page. In the app, the database and the file server enforce the same limits.</p>
-    <div class="acomposer">
-      <form id="aask" autocomplete="off">
-        <label for="aq" class="visually-hidden">Question for the agent</label>
-        <input id="aq" name="aq" placeholder="Why is order 1042 late, and what should support do about it?" required maxlength="300">
-        <button type="submit" disabled>Ask</button>
-      </form>
-    </div>
-    <ul class="examples" aria-label="Questions with a saved run"></ul>
-    <div id="aresults" aria-live="polite"></div>
-  </section>
 </main>
 
 <footer>
@@ -482,6 +493,41 @@ footer {
   queried with SQLite compiled to WebAssembly (sql.js). Search runs on two small open models
   (all-MiniLM-L6-v2 and ms-marco-MiniLM-L-6-v2), downloaded once — about 50 MB — and cached by your browser.
 </footer>
+
+<!-- The agent chat. In the full app an agent built on Claude chooses its steps;
+     here saved questions replay a saved run and anything else runs live with
+     fixed steps (agent.js, liverun.js). -->
+<button type="button" class="chat-launch" id="chat-launch" aria-expanded="false" aria-controls="agent">Ask the agent</button>
+<aside class="chat" id="agent" role="dialog" aria-labelledby="agent-title" hidden>
+  <header class="chat-head">
+    <div>
+      <h2 id="agent-title">Acme agent</h2>
+      <span class="chat-state" role="status">Loading the search models…</span>
+    </div>
+    <button type="button" class="chat-size" aria-label="Make the chat larger" aria-pressed="false">⤢</button>
+    <button type="button" class="chat-close" aria-label="Close the chat">✕</button>
+  </header>
+  <div class="chat-role">
+    <fieldset class="roles">
+      <legend>Ask as</legend>
+      <div class="seg"></div>
+      <span class="access"></span>
+    </fieldset>
+  </div>
+  <div class="chat-log" id="aresults" role="log" aria-live="polite">
+    <div class="msg agent">
+      <p>Ask about orders, the policies behind them, or both: I query the orders database, then look up the document that explains what I found.</p>
+      <p>This page calls no AI service. These questions replay a saved run; anything else runs live in your browser with fixed steps.</p>
+      <p class="chat-fine">"Ask as" is an illustration: the company is fictional and all of its data ships with this page. In the full app, the database and the file server enforce the same limits.</p>
+      <ul class="examples" aria-label="Questions with a saved run"></ul>
+    </div>
+  </div>
+  <form id="aask" autocomplete="off">
+    <label for="aq" class="visually-hidden">Message for the agent</label>
+    <input id="aq" name="aq" placeholder="Why is order 1042 late?" required maxlength="300">
+    <button type="submit" disabled>Send</button>
+  </form>
+</aside>
 
 <script type="module" src="app.js"></script>
 </body>

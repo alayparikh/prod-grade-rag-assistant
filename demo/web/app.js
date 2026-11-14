@@ -2,16 +2,17 @@
 //   search.js does document search, orders.js turns order questions into SQL,
 //   scene.js draws the 3D hero. This file connects them to the page:
 //   - the scroll story (scroll position -> scene pose and captions)
-//   - roles ("Search as"), shared by the document, order and agent sections
+//   - roles: "Search as" is shared by the document and order sections; the
+//     agent chat's "Ask as" is its own
 //   - the five failure cases, whose explanations are computed from each run
 //   - rendering results, the X-ray panels and the privacy meter
-//   - the agent section, which plays back saved runs (agent.js)
+//   - the agent chat, docked bottom-right, which plays back saved runs (agent.js)
 //   - startup: index, models, sql.js, orders.db and agent.json all load before
 //     the privacy meter starts counting, so searching adds zero requests.
 import { Engine, tokenize } from "./search.js";
 import { INTENTS, Translator, applyRole, clarifyingQuestion, loadContext, run, summarize } from "./orders.js";
 import { ROLES } from "./roles.js";
-import { SavedRuns, renderRun } from "./agent.js";
+import { SavedRuns, followUp, renderReply } from "./agent.js";
 import { liveRun } from "./liverun.js";
 
 const SQLJS = "https://cdn.jsdelivr.net/npm/sql.js@1.15.2/dist/";
@@ -38,10 +39,14 @@ let scene = null;
 function onScroll() {
   const rect = story.getBoundingClientRect();
   const span = rect.height - innerHeight;
-  // 0 at the top of the story, 4 at its end: one unit per step.
-  const p = Math.max(0, Math.min(1, -rect.top / span)) * 4.4;
+  // 0 at the top of the story, one unit per step, and a little past the last
+  // step so its caption is held before the page scrolls on.
+  const p = Math.max(0, Math.min(1, -rect.top / span)) * (steps.length + 0.4);
   scene?.setProgress(p);
-  heroCopy.style.opacity = String(Math.max(0, 1 - p * 2.5));
+  const heroOpacity = Math.max(0, 1 - p * 2.5);
+  heroCopy.style.opacity = String(heroOpacity);
+  // Its links must not be clickable or focusable once it has faded out.
+  heroCopy.style.visibility = heroOpacity ? "" : "hidden";
   steps.forEach((el) => {
     const at = Number(el.dataset.at);
     el.classList.toggle("on", p > at - 0.55 && (at === steps.length || p < at + 0.45));
@@ -88,14 +93,24 @@ function highlight(text, question) {
 let role = ROLES[0];
 const allowed = () => new Set(engine.files.filter(role.can));
 
-// One role, shown in both sections.
+// The document and order sections share one role. The agent chat has its own,
+// so switching role mid-conversation doesn't re-run the page's searches, and
+// the page's switch doesn't change who the chat is asking as.
+let agentRole = ROLES[0];
+const agentAllowed = () => new Set(engine.files.filter(agentRole.can));
+const ORDER_SCOPE = { admin: "Sees every order", engineer: "Sees every order · emails and prices hidden",
+  hr: "No access to order data", contractor: "West-region orders only · emails and prices hidden" };
+
 const segs = [...document.querySelectorAll(".roles .seg")];
 segs.forEach((seg, n) => {
   for (const r of ROLES) {
     seg.insertAdjacentHTML("beforeend",
-      `<label><input type="radio" name="role-${n}" value="${r.id}" ${r === role ? "checked" : ""}><span>${r.label}</span></label>`);
+      `<label><input type="radio" name="role-${n}" value="${r.id}" ${r === ROLES[0] ? "checked" : ""}><span>${r.label}</span></label>`);
   }
 });
+const agentSeg = $("#agent .seg");
+const pageSegs = segs.filter((seg) => seg !== agentSeg);
+
 function showAccess() {
   if (!engine) return;
   const open = allowed().size, hidden = engine.files.length - open;
@@ -103,27 +118,35 @@ function showAccess() {
   el.textContent = hidden ? `Can open ${open} of ${engine.files.length} files · ${hidden} hidden from this role`
                           : `Can open all ${open} files`;
   el.classList.toggle("blocked", hidden > 0);
-  const scope = { admin: "Sees every order", engineer: "Sees every order · emails and prices hidden",
-    hr: "No access to order data", contractor: "West-region orders only · emails and prices hidden" }[role.id];
   const oel = $("#orders .access");
-  oel.textContent = scope;
+  oel.textContent = ORDER_SCOPE[role.id];
   oel.classList.toggle("blocked", role.id !== "admin");
+}
+function showAgentAccess() {
+  if (!engine) return;
+  const open = agentAllowed().size, hidden = engine.files.length - open;
   const ael = $("#agent .access");
-  ael.textContent = `${hidden ? `${open} of ${engine.files.length} files` : `All ${open} files`} · ${scope.toLowerCase()}`;
-  ael.classList.toggle("blocked", role.id !== "admin");
+  ael.textContent = `${hidden ? `${open} of ${engine.files.length} files` : `All ${open} files`} · ${ORDER_SCOPE[agentRole.id].toLowerCase()}`;
+  ael.classList.toggle("blocked", agentRole.id !== "admin");
 }
 function setRole(id) {
   role = ROLES.find((r) => r.id === id);
-  segs.forEach((seg) => { seg.querySelector(`input[value="${id}"]`).checked = true; });
+  pageSegs.forEach((seg) => { seg.querySelector(`input[value="${id}"]`).checked = true; });
   showAccess();
 }
-segs.forEach((seg) => seg.addEventListener("change", (e) => {
+pageSegs.forEach((seg) => seg.addEventListener("change", (e) => {
   setRole(e.target.value);
   // Same questions, new permissions.
   if (lastQuestion) ask(lastQuestion);
   if (lastOrderQuestion) askOrders(lastOrderQuestion);
-  if (lastAgentQuestion) askAgent(lastAgentQuestion);
 }));
+// The chat keeps its history: it notes the switch, and the next message is
+// answered under the new role.
+agentSeg.addEventListener("change", (e) => {
+  agentRole = ROLES.find((r) => r.id === e.target.value);
+  showAgentAccess();
+  noteRole();
+});
 
 // ---- the five failure cases ------------------------------------------------
 // Each explanation is worked out from what the search actually returned, so
@@ -454,42 +477,85 @@ for (const q of ORDER_EXAMPLES) {
   li.append(b); olist.append(li);
 }
 
-// ---- agent -------------------------------------------------------------------
-// A question with a saved run (agent.js, agent.json) replays it. Any other
-// question runs live in the browser (liverun.js): the same SQL templates as the
-// Orders section and the same document search, with no model and no request.
+// ---- agent chat ----------------------------------------------------------------
+// A chat panel docked bottom-right. A question with a saved run (agent.js,
+// agent.json) replays it. Any other question runs live in the browser
+// (liverun.js): the same SQL templates as the Orders section and the same
+// document search, with no model and no request. The conversation lives in the
+// page only; nothing is stored or sent.
+const chat = $("#agent");
+const launch = $("#chat-launch");
+const chatState = $(".chat-state");
 const aform = $("#aask");
 const ainput = $("#aq");
 const abutton = aform.querySelector("button");
-const aresults = $("#aresults");
+const alog = $("#aresults");
 const alist = $("#agent .examples");
-let saved = null, agentReady = null, liveReady = null, lastAgentQuestion = null, stopPlayback = null;
+// pendingQuestion: the question the agent last asked back about, if any.
+let saved = null, agentReady = null, liveReady = null, pendingQuestion = null, answering = false, chatted = false;
+
+function toggleChat(open) {
+  chat.hidden = !open;
+  launch.hidden = open;
+  launch.setAttribute("aria-expanded", String(open));
+  if (open) { toEnd(); ainput.focus(); } else launch.focus();
+}
+launch.addEventListener("click", () => toggleChat(true));
+$(".chat-close").addEventListener("click", () => toggleChat(false));
+for (const link of document.querySelectorAll('a[href="#agent"]')) {
+  link.addEventListener("click", (e) => { e.preventDefault(); toggleChat(true); });
+}
+chat.addEventListener("keydown", (e) => { if (e.key === "Escape") toggleChat(false); });
+$(".chat-size").addEventListener("click", (e) => {
+  const wide = chat.classList.toggle("wide");
+  e.currentTarget.setAttribute("aria-pressed", String(wide));
+  e.currentTarget.setAttribute("aria-label", wide ? "Make the chat smaller" : "Make the chat larger");
+});
+
+const toEnd = () => { alog.scrollTop = alog.scrollHeight; };
+function addMessage(kind, html) {
+  const el = document.createElement(kind === "note" ? "p" : "div");
+  el.className = kind === "note" ? "chat-note" : `msg ${kind}`;
+  el.innerHTML = html;
+  alog.append(el);
+  toEnd();
+  return el;
+}
+// Shown once a conversation has started, so earlier replies keep their role.
+function noteRole() {
+  if (chatted) addMessage("note", `Now asking as ${escape(agentRole.label)} · ${escape($("#agent .access").textContent)}`);
+}
 
 async function askAgent(text) {
   text = text.trim();
-  if (!text || !liveReady) return;
-  lastAgentQuestion = text;
+  if (!text || !liveReady || answering) return;
+  answering = true; chatted = true;
   abutton.disabled = true;
+  ainput.value = "";
+  addMessage("user", escape(text));
+  const reply = addMessage("agent", `<span class="typing" aria-label="Working"><i></i><i></i><i></i></span>`);
   try {
     await agentReady.catch(() => {});  // without saved runs, everything runs live
-    stopPlayback?.();
-    const match = saved ? await saved.match(text) : { question: null };
-    for (const chip of alist.querySelectorAll("button")) {
-      chip.setAttribute("aria-pressed", String(chip.dataset.id === match.question?.id));
-    }
+    // A short reply to "which customer?" completes the question it was asked about.
+    const asked = followUp(pendingQuestion, text);
+    const match = saved ? await saved.match(asked) : { question: null };
     let view;
     if (match.question) {
-      view = { data: saved.data, question: match.question, run: match.question.runs[role.id], role, typed: text };
+      view = { data: saved.data, question: match.question, run: match.question.runs[agentRole.id], role: agentRole, typed: asked };
     } else {
       await liveReady;
-      const run = await liveRun(text, { translator, octx, db: ordersDb, engine, roleId: role.id, allow: allowed() });
-      view = { data: { kind: "live" }, question: { question: text }, run, role, typed: text };
+      const run = await liveRun(asked, { translator, octx, db: ordersDb, engine, roleId: agentRole.id, allow: agentAllowed() });
+      view = { data: { kind: "live" }, question: { question: asked }, run, role: agentRole, typed: asked };
     }
-    stopPlayback = renderRun(aresults, view, { animate: !reduce });
+    pendingQuestion = view.run.clarification ? asked : null;
+    await renderReply(reply, view, { animate: !reduce, onReveal: toEnd });
   } catch (e) {
-    aresults.innerHTML = `<div class="empty"><h3>That run failed</h3><p>${escape(e.message)}. Reload the page to try again.</p></div>`;
+    pendingQuestion = null;
+    reply.innerHTML = `<p><strong>That run failed.</strong> ${escape(e.message)}. Reload the page to try again.</p>`;
   } finally {
+    answering = false;
     abutton.disabled = false;
+    toEnd();
   }
 }
 
@@ -500,9 +566,8 @@ function showSavedQuestions() {
   for (const question of saved.data.questions) {
     const li = document.createElement("li");
     const b = document.createElement("button");
-    b.type = "button"; b.textContent = question.question; b.dataset.id = question.id;
-    b.setAttribute("aria-pressed", "false");
-    b.addEventListener("click", () => { ainput.value = question.question; askAgent(question.question); });
+    b.type = "button"; b.textContent = question.question;
+    b.addEventListener("click", () => askAgent(question.question));
     li.append(b); alist.append(li);
   }
 }
@@ -527,6 +592,7 @@ function watchRequests() {
   engine = new Engine(index);
   engine.files = index.files;
   showAccess();
+  showAgentAccess();
   // The story's numbers come from the data, so adding a document can't leave them stale.
   $("#corpus-count").textContent = `${index.chunks.length} passages, ${index.files.length} files`;
   const loaded = {};
@@ -561,10 +627,10 @@ function watchRequests() {
     await saved.ready();
   })();
   agentReady.catch(() => {
-    aresults.innerHTML = `<div class="empty"><h3>No saved runs on this build</h3><p>Questions still run live. Build the saved runs with <code>python demo/agent_runs.py</code>, then reload.</p></div>`;
+    addMessage("note", "No saved runs on this build; questions still run live. Build them with python demo/agent_runs.py, then reload.");
   });
   // Live agent runs need the translator, the orders database and the reranker
-  // the document search uses, so the agent box opens once all three are in.
+  // the document search uses, so the chat takes messages once all three are in.
   liveReady = ready.then(async () => {
     translator = new Translator((t) => engine.embed(t));
     await Promise.all([ordersReady, translator.ready(), engine.rerankerReady]);
@@ -572,5 +638,7 @@ function watchRequests() {
   await Promise.all([liveReady, agentReady.catch(() => {})]);
   obutton.disabled = false;
   abutton.disabled = false;
+  chatState.textContent = "Ready · runs in your browser";
+  chatState.classList.add("on");
   watchRequests();
 })();

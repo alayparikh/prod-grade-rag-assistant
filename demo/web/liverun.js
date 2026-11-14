@@ -12,6 +12,7 @@
 //
 // No DOM: the page and the CI check (demo/check_search.mjs) run the same code.
 import { applyRole, clarifyingQuestion, run, summarize } from "./orders.js";
+import { tokenize } from "./search.js";
 
 // rag.NO_CONTEXT_ANSWER: the full app's words when nothing it can read answers.
 export const NO_INFORMATION = "I don't have information on that in the indexed documents.";
@@ -25,9 +26,34 @@ const human = (s) => String(s).replace(/_/g, " ");
 const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const withoutSection = (text) => text.replace(/^Section: .*\n/, "").trim();
 
+// Sentences end at . ! ? followed by a space, so the dots inside a URL or an
+// email address don't end one.
+const sentencesOf = (text) => text.split(/(?<=[.!?])\s+/).map((x) => x.trim()).filter(Boolean);
+
+// The opening of a passage: what a policy lookup quotes.
 function excerpt(text, sentences = EXCERPT_SENTENCES) {
-  const body = withoutSection(text);
-  return (body.match(/[^.!?]+[.!?]+(?=\s|$)/g) ?? [body]).slice(0, sentences).join("").trim();
+  return sentencesOf(withoutSection(text).replace(/\n+/g, " ")).slice(0, sentences).join(" ");
+}
+
+// The part of a passage that answers the question. With no model to read the
+// passage, the answer is the pieces of it that share the most words with the
+// question (a piece is a sentence, a line, or one field of a "a | b | c"
+// line), in the passage's order. A resume's opening lines don't answer "what is
+// Sam's LinkedIn?"; its LinkedIn field does. If no piece shares a word, the
+// passage's opening stands in. The full app's model writes this answer instead.
+const FILLER = new Set("the and are was were what who how does did for with from that this have has its into when where which why you your about".split(" "));
+const MAX_ANSWER_PIECES = 3;
+
+function answerFrom(text, question) {
+  const terms = new Set(tokenize(question).filter((t) => t.length > 2 && !FILLER.has(t)));
+  // A line that starts in lower case continues the sentence above it (the
+  // documents are hard-wrapped); list bullets are dropped.
+  const body = withoutSection(text).replace(/\n(?=\p{Ll})/gu, " ");
+  const pieces = body.split(/\n+| \| /).flatMap(sentencesOf).map((x) => x.replace(/^[-–•*]\s+/, ""));
+  const scored = pieces.map((piece) => ({ piece, score: new Set(tokenize(piece).filter((t) => terms.has(t))).size }));
+  const best = Math.max(0, ...scored.map((x) => x.score));
+  if (!best) return excerpt(text, MAX_ANSWER_PIECES);
+  return scored.filter((x) => x.score === best).slice(0, MAX_ANSWER_PIECES).map((x) => x.piece).join("\n");
 }
 
 // The query as it ran, with its values in place, for showing on the tape.
@@ -81,7 +107,7 @@ async function documentRun(question, engine, allow) {
   const step = await searchStep(engine, question, allow);
   const top = step.detail.passages[0];
   if (!top) return result({ answer: NO_INFORMATION, steps: [step] });
-  return result({ answer: excerpt(top.text, 3), sources: [top.source], steps: [step] });
+  return result({ answer: answerFrom(top.text, question), sources: [top.source], steps: [step] });
 }
 
 // question, and { translator, octx, db, engine, roleId, allow } from the page.

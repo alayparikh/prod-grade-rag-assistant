@@ -1,4 +1,4 @@
-// "Ask the agent": plays back saved runs of the app's agent (agent.py).
+// The agent chat: plays back saved runs of the app's agent (agent.py).
 //
 // The full app's agent calls Claude, and this page calls nothing, so the page
 // cannot run it. Instead demo/agent_runs.py ran each question once per role
@@ -12,8 +12,9 @@
 //   "live"      run just now in the browser for a question with no saved run
 //               (liverun.js): fixed steps, no model
 //
-//   SavedRuns   matches a typed question to a saved one, by meaning
-//   renderRun   draws one run as a tape of steps, then the answer
+//   SavedRuns    matches a typed question to a saved one, by meaning
+//   followUp     joins a reply to the question the agent asked back about
+//   renderReply  draws one run as a chat reply: its steps, then the answer
 
 // Cosine similarity a typed question needs to count as a saved one.
 // Measured on the golden set's paraphrases and look-alikes: rewordings of a
@@ -71,6 +72,20 @@ export class SavedRuns {
   }
 }
 
+// ---- conversation ----------------------------------------------------------
+// When the agent asked back ("Which customer?"), the next message is usually
+// the missing piece ("Juniper Fulfilment"), not a new question. With no model
+// to judge that, the rule is fixed: a short message that is not itself a
+// question completes the pending one; anything else starts fresh. The full
+// app's agent gets the same effect from ask_user and the conversation history.
+const MAX_REPLY_WORDS = 8;
+
+export function followUp(pending, text) {
+  const reply = text.trim();
+  if (!pending || reply.endsWith("?") || reply.split(/\s+/).length > MAX_REPLY_WORDS) return reply;
+  return `${pending} ${reply}`;
+}
+
 // ---- rendering -------------------------------------------------------------
 const escape = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const plural = (n, unit) => `${n} ${unit}${n === 1 ? "" : "s"}`;
@@ -112,20 +127,17 @@ function evidenceHtml(step) {
   return `<p class="tnote">Nothing this role can read matched.</p>`;
 }
 
-// The left edge of the tape: the measured time for a recorded run. An example
-// run has no model in it, so its timings would mean nothing; it gets step numbers.
-const mark = (data, ms, n) => (isRecorded(data) ? `T+${seconds(ms)}` : n);
-
-function stepHtml(data, step, i) {
+// One line per step, with what it read folded away beneath it. A recorded run
+// also shows the measured time; an example run has no model in it, so its
+// timings would mean nothing.
+function stepHtml(data, step) {
   const tool = TOOLS[step.tool] ?? { label: step.tool, kind: "from-docs", unit: "result", reveal: "Show the result" };
   const outcome = step.ok ? plural(step.count, tool.unit) : "refused";
   const query = step.tool === "search_docs" ? `<q>${escape(step.args.query ?? "")}</q>` : "";
+  const at = isRecorded(data) ? `<span class="tat">T+${seconds(step.at_ms)}</span>` : "";
   return `<li class="tstep ${tool.kind}${step.ok ? "" : " refused"}">
-    <span class="tat">${mark(data, step.at_ms, `Step ${i + 1}`)}</span>
-    <div class="tbody">
-      <h4>${tool.label}<em>${outcome}</em></h4>${query}
-      <details><summary>${tool.reveal}</summary>${evidenceHtml(step)}</details>
-    </div></li>`;
+    <h4>${tool.label}<em>${outcome}</em>${at}</h4>${query}
+    <details><summary>${tool.reveal}</summary>${evidenceHtml(step)}</details></li>`;
 }
 
 // Answers are plain sentences with the odd **bold** and paragraph break;
@@ -135,34 +147,29 @@ function answerHtml(text) {
   return escape(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\n{2,}/g, "</p><p>").replace(/\n/g, "<br>");
 }
 
+// Every reply says which kind of run produced it.
 function stampHtml(data, run, role) {
   const facts = `as ${escape(role.label)} · ${plural(run.steps.length, "step")}`;
   if (data.kind === "live") {
-    return `<p class="astamp"><b>Live run</b> ${facts} · no saved run for this question, so it ran just now in your
-      browser: the same SQL templates and document search as the sections above, with fixed steps and no model.
-      The answer is put together from what they returned</p>`;
+    return `<p class="astamp"><b>Live run</b> ${facts} · ran just now in your browser: fixed steps, no model</p>`;
   }
   if (isRecorded(data)) {
     return `<p class="astamp"><b>Recorded run</b> ${escape(data.made_at)} · ${escape(data.model)} · ${facts}
       · ${seconds(run.latency_ms)}${run.cost_usd == null ? "" : ` · $${run.cost_usd.toFixed(3)}`}</p>`;
   }
-  return `<p class="astamp"><b>Example run</b> ${facts} · every query and passage is a real result from this data;
-    the choice of steps and the answer's wording are scripted</p>`;
+  return `<p class="astamp"><b>Example run</b> ${facts} · real queries and passages; the steps and wording are scripted</p>`;
 }
 
-function runHtml({ data, question, run, role, typed }) {
+function replyHtml({ data, question, run, role, typed }) {
   const replayed = normalise(typed) === normalise(question.question) ? "" :
-    `<p class="amatch">Not the same words, so here is the saved question it matches: <strong>${escape(question.question)}</strong></p>`;
+    `<p class="amatch">Closest saved question: <strong>${escape(question.question)}</strong></p>`;
   const cited = [...run.sources.map((s) => `<span class="file">${escape(s)}</span>`),
     ...(run.used_orders ? [`<span class="file">orders database</span>`] : [])];
-  const heading = run.clarification ? "The agent asked back" : "Answer";
-  const tape = run.steps.length ? `<ol class="tape" aria-label="Steps the agent took">${run.steps.map((s, i) => stepHtml(data, s, i)).join("")}</ol>` :
-    `<p class="tnote tape-empty">No steps: the agent stopped before reading anything.</p>`;
+  const tape = run.steps.length ? `<ol class="tape" aria-label="Steps the agent took">${run.steps.map((s) => stepHtml(data, s)).join("")}</ol>` : "";
   return `${replayed}${tape}
     <div class="averdict${run.clarification ? " asked" : ""}">
-      <span class="tat">${mark(data, run.latency_ms, "")}</span>
-      <div><h4>${heading}</h4><div class="atext"><p>${answerHtml(run.answer)}</p></div>
-      ${cited.length ? `<p class="asrc">From ${cited.join(" ")}</p>` : ""}</div>
+      <div class="atext"><p>${answerHtml(run.answer)}</p></div>
+      ${cited.length ? `<p class="asrc">From ${cited.join(" ")}</p>` : ""}
     </div>
     ${stampHtml(data, run, role)}`;
 }
@@ -175,22 +182,21 @@ const MIN_GAP_MS = 280;
 const MAX_GAP_MS = 900;
 const EXAMPLE_GAP_MS = 520;
 const gap = (ms) => Math.max(MIN_GAP_MS, Math.min(MAX_GAP_MS, ms * PLAYBACK_SCALE));
+const wait = (ms) => new Promise((done) => setTimeout(done, ms));
 
-// Draws the run into `el`. Every step is laid out at once and revealed in
-// order, so nothing on the page moves while it plays. Returns a function that
-// cancels the playback.
-export function renderRun(el, view, { animate = true } = {}) {
-  el.innerHTML = runHtml(view);
+// Draws the run into the chat bubble `el`: each step appears in the order it
+// was taken, then the answer. `onReveal` runs after each part appears, so the
+// chat can keep the newest line in view. Resolves when the whole reply is shown.
+export async function renderReply(el, view, { animate = true, onReveal = () => {} } = {}) {
+  el.innerHTML = replyHtml(view);
+  if (!animate) { onReveal(); return; }
   const parts = [...el.querySelectorAll(".tstep, .averdict, .astamp")];
-  if (!animate) return () => {};
-  parts.forEach((part) => part.classList.add("pending"));
-  const times = [...view.run.steps.map((s) => s.at_ms), view.run.latency_ms, view.run.latency_ms];
-  const timers = [];
-  let at = 0;
-  parts.forEach((part, i) => {
-    if (i === parts.length - 1) at += MIN_GAP_MS;
-    else at += isRecorded(view.data) ? gap(times[i] - (times[i - 1] ?? 0)) : EXAMPLE_GAP_MS;
-    timers.push(setTimeout(() => part.classList.remove("pending"), at));
-  });
-  return () => { timers.forEach(clearTimeout); parts.forEach((part) => part.classList.remove("pending")); };
+  parts.forEach((part) => { part.hidden = true; });
+  const times = [...view.run.steps.map((s) => s.at_ms), view.run.latency_ms];
+  for (const [i, part] of parts.entries()) {
+    const last = i === parts.length - 1;
+    await wait(last ? 0 : isRecorded(view.data) ? gap(times[i] - (times[i - 1] ?? 0)) : EXAMPLE_GAP_MS);
+    part.hidden = false;
+    onReveal();
+  }
 }
