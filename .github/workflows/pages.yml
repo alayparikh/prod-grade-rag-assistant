@@ -58,7 +58,12 @@ jobs:
         with:
           node-version: "22"
 
+      # onnxruntime-node's postinstall downloads CUDA binaries on Linux x64 from
+      # a GitHub release that can 404. The check runs on CPU, whose binaries
+      # ship in the npm package, so skip the CUDA download.
       - name: Install Transformers.js and sql.js for the check
+        env:
+          ONNXRUNTIME_NODE_INSTALL_CUDA: skip
         run: npm install --prefix demo/.node @huggingface/transformers@3.7.1 sql.js@1.15.2
 
       # The query half runs in JavaScript. This runs the golden set through

@@ -63,8 +63,9 @@ Check the browser search against the golden set:
 
 ```bash
 python demo/agent_runs.py --check     # the saved agent runs are current
-npm install --prefix demo/.node @huggingface/transformers@3.7.1 sql.js@1.15.2
+ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install --prefix demo/.node @huggingface/transformers@3.7.1 sql.js@1.15.2
 node demo/check_search.mjs
+# (the env var stops onnxruntime-node fetching CUDA binaries on Linux; the check runs on CPU)
 ```
 
 ## The interactive parts (`app.js`)
