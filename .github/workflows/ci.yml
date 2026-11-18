@@ -7,9 +7,13 @@ on:
   workflow_dispatch:
     inputs:
       run_live_eval:
-        description: "Also run the --live eval)"
+        description: "Also run the --live eval (calls Claude, costs money)"
         type: boolean
         default: false
+      live_repeat:
+        description: "Live runs per case: 1, or 3 for pass@3 / pass^3"
+        type: number
+        default: 1
 
 jobs:
   # Unit tests + retrieval eval. No API key, no cost - safe on every PR.
@@ -52,13 +56,28 @@ jobs:
 
       # Runs against the committed synthetic corpus in eval/fixtures/, not the
       # real docs/ - those are git-ignored because they hold personal records.
-      - name: Retrieval eval (fixture corpus)
+      # The baseline fails the build on a case that regressed from PASS or an
+      # MRR drop; it holds no latency (machine-specific).
+      - name: Retrieval eval (fixture corpus, against baseline)
         env:
           RAG_DOCS_PATH: ./eval/fixtures/docs
           RAG_PERSIST_PATH: ${{ runner.temp }}/ci_index
           RAG_META_DB: ${{ runner.temp }}/ci_index/meta.sqlite
           RAG_LOG_PATH: ${{ runner.temp }}/ci_logs/events.jsonl
-        run: python eval/run_eval.py --golden-set eval/fixtures/golden_set.yaml
+        run: >-
+          python eval/run_eval.py --golden-set eval/fixtures/golden_set.yaml
+          --baseline eval/baseline_retrieval.json --results ${{ runner.temp }}/retrieval.json
+
+      # Production-shape checks at CI size. Free, no API key. Each exits 1 on
+      # a failed check; see PRODUCTION_READINESS.md for what each proves.
+      - name: Scale bench (incremental, resume, query memory vs corpus size)
+        run: python eval/scale/bench.py all --files 300 --sizes 200,2000
+
+      - name: SQL load (concurrent guarded queries + attack mix)
+        run: python eval/load/sql_load.py --orders 20000 --workers 8 --queries 400
+
+      - name: Agent load (concurrency + injected 429s, timeouts, runaways)
+        run: python eval/load/agent_load.py --questions 200 --workers 16
 
   # Manual only: checks generated answers, refusal behaviour, and injection
   # resistance. Needs ANTHROPIC_API_KEY in repo secrets and costs money, so it
@@ -90,4 +109,17 @@ jobs:
           RAG_PERSIST_PATH: ${{ runner.temp }}/ci_index
           RAG_META_DB: ${{ runner.temp }}/ci_index/meta.sqlite
           RAG_LOG_PATH: ${{ runner.temp }}/ci_logs/events.jsonl
-        run: python eval/run_eval.py --live --golden-set eval/fixtures/golden_set.yaml
+        run: >-
+          python eval/run_eval.py --live --golden-set eval/fixtures/golden_set.yaml
+          --metrics --repeat ${{ inputs.live_repeat }}
+
+      # Fixture docs plus documents carrying injected instructions.
+      - name: Live prompt-injection eval
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RAG_PERSIST_PATH: ${{ runner.temp }}/adv_index
+          RAG_LOG_PATH: ${{ runner.temp }}/ci_logs/events.jsonl
+        run: |
+          python eval/adversarial/build_corpus.py --out "${{ runner.temp }}/adv_docs"
+          RAG_DOCS_PATH="${{ runner.temp }}/adv_docs" python eval/run_eval.py --live \
+            --golden-set eval/adversarial/injection.yaml --metrics

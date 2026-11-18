@@ -242,6 +242,22 @@ Check `logs/events.jsonl` in the `index` volume as you go. Each line has
 the username, the paths retrieved, latency and cost. Confirm no path
 outside a user's access ever appears on their line.
 
+**Readiness.** `python -m pipeline.health --ready` exits 1 unless the
+keyword index and the orders database open read-only. The compose
+healthcheck is liveness (Streamlit answers); behind a load balancer, point
+its readiness probe at this instead so an instance with an unreadable index
+gets no traffic. It deliberately ignores index age: a stale index still
+answers, and failing readiness on it would drain every instance at once.
+
+**Rolling back an index.** `--reindex` deletes the index directory the app
+is reading from. Before running it, or before an embedding-model change,
+copy the `index` volume; to roll back, stop the app, restore the copy, and
+start it. An interrupted ordinary run needs nothing: the manifest is
+checkpointed every 200 files and the next run resumes. At scale the target
+is a blue/green index (build the new one beside the old, switch a pointer,
+keep the old one until the new one passes the eval), described in
+`PRODUCTION_READINESS.md`.
+
 ---
 
 ## 7. What IT needs to do

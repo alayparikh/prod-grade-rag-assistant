@@ -14,6 +14,13 @@ is real: names, emails (`@example.com`), phone numbers (`555-01xx`), URLs
 | `make_orders.py` | Writes `orders.sql`. Deterministic, with a fixed "today" of 2026-10-28 stored in the `meta` table, so answers never drift |
 | `golden_set.yaml` | The eval questions and their expected answers, for documents, file search, orders and the agent. The agent cases marked `demo: true` are the demo page's saved questions; `demo_live: true` ones are run live by the page and checked in CI |
 
+Documents carrying injected instructions live in `eval/adversarial/docs/`,
+not here: the demo, the browser check and the retrieval baseline index this
+folder and must stay clean. `eval/adversarial/build_corpus.py` merges the two
+for the live prompt-injection suite. The scale and load tests generate their
+own data (`eval/scale/make_corpus.py`, `eval/load/sql_load.py`) and never
+change these files.
+
 ## Story orders
 
 Most orders are generated filler; ten are written by hand so questions have

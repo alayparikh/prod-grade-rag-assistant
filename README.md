@@ -40,7 +40,7 @@ question → answer_question()          ← every guardrail lives here
 | File | Role |
 |---|---|
 | `rag.py` | The engine — ingest, index, retrieve, guardrails, CLI, launcher |
-| `app.py` | Streamlit UI + per-session rate limiting (thin; logic lives in `rag.py`) |
+| `app.py` | Streamlit UI + per-user rate limiting (thin; logic lives in `rag.py`) |
 | `eval/run_eval.py` | Golden-set eval runner; exits non-zero on failure (CI-ready) |
 | `indexer/crawl.py` | Walks the share into SQLite + FTS5; the file census |
 | `indexer/__main__.py` | `python -m indexer` — the cron entrypoint |
@@ -71,7 +71,9 @@ All enforced inside `answer_question()`:
 - **Answer cache** — keyed on the user, the normalised question and the index version, first turns only; a hit re-runs the access check on every source file, so revoked permissions turn it into a miss.
 - **Streaming redaction** — redaction runs on the whole answer-so-far and the newest 80 characters are held back, so a secret split across two stream chunks is never on screen.
 - **Offline mode** — `RAG_LLM=off` never constructs an API client; answers are quoted passages, and passages scoring below the reranker cutoff become a refusal.
-- **Rate limiting** (web UI only) — 30 questions/hour per session. In-memory; multi-instance needs Redis.
+- **Rate limiting** (web UI) — 30 questions/hour per signed-in user across all their tabs and every mode that calls the model (`pipeline/ratelimit.py`, `RAG_RATE_LIMIT_MAX`). In-process; multi-instance swaps in Redis behind the same interface.
+- **Bounded model calls** — every Claude client is built with a per-call timeout, a retry cap and a token cap (`pipeline/llm.py`, `RAG_LLM_TIMEOUT_S`, `RAG_LLM_MAX_RETRIES`).
+- **Orders unavailable fails soft** — a missing, locked or corrupt orders database gives order mode a plain "unavailable" answer and drops the agent to documents only, instead of an exception.
 
 ## Logging
 
@@ -98,6 +100,10 @@ up/down are logged the same way, with the username and never the password.
 `eval/golden_set.yaml` holds test questions grounded in your actual `docs/` content — fact lookups, out-of-scope negatives (should refuse), a multi-turn follow-up, and a prompt-injection attempt. Git-ignored; `eval/golden_set.example.yaml` is the schema template.
 
 The retrieval-only run checks the reranked top 10, which is what the model actually sees. `--live` additionally verifies refusal and injection resistance, and an LLM judge fails any answer making a claim the retrieved text doesn't support (`--no-judge` to skip); it runs with the answer cache off so a cached answer can't hide a regression. The fixture golden set also holds agent cases (`mode: agent`), checked in `--live` on outcomes — tools that returned a result, values read, files cited — never on the order of steps. An `ERROR` (vs. `FAIL`) means the API call itself failed, not a quality regression. Update the golden set when you change `docs/` — a stale one gives false failures and false passes.
+
+`--metrics` writes `eval/results/*.json` with hit@1/3/5, MRR (rank of the first chunk holding an expected fact), p50/p95 latency and, in `--live`, tokens and cost per question read back from the event log. `--baseline eval/baseline_retrieval.json` fails on any case that regressed from PASS or an MRR drop over 0.05; CI runs it on every push. `--live --repeat 3` reports pass@3 and pass^3 and lists flaky cases.
+
+**Production-scale evals** (free, in CI at small sizes; larger by hand): `eval/scale/bench.py` (incremental indexing, resume after a kill, query memory as the corpus grows), `eval/load/sql_load.py` (concurrent guarded SQL plus an attack mix), `eval/load/agent_load.py` (concurrent agent questions with injected 429s, timeouts, slow and runaway models), `tests/test_sql_attacks.py` over `eval/adversarial/sql_attacks.yaml`, and `tests/test_faults.py`. Live prompt-injection cases with poisoned documents are in `eval/adversarial/`. What each one proves, the failure scenarios behind them and the measured numbers are in [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md).
 
 **Why both tests and evals.** A hybrid retriever is deliberately redundant: when BM25 degrades, vector search often still surfaces the right chunk. That's good for users and bad for detection — a deliberately broken `_tokenize()` was measured passing the full retrieval eval while `tests/test_units.py` caught it immediately. Evals cover the pipeline end to end; unit tests guard the components the pipeline can mask.
 

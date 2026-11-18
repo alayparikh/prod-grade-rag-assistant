@@ -7,7 +7,7 @@ Four modes, each a single call into the engine:
     Find a file       -> search.metadata              (file names, no API)
 
 This file owns only what is per-session: NAS login (auth/smb.py; the password
-never leaves session memory), the per-session rate limit, chat history,
+never leaves session memory), the per-user rate limit, chat history,
 feedback buttons, and rendering. Run with `python rag.py` or
 `streamlit run app.py`; RAG_AUTH_MODE=none skips login for local use.
 """
@@ -21,18 +21,16 @@ from langchain_core.messages import AIMessage, HumanMessage
 import rag
 from auth import smb
 from indexer import crawl
-from pipeline import health
+from pipeline import health, ratelimit
 from rag import HISTORY_TURNS, answer_question, build_chain, get_vectorstore
 from search import metadata
 
 load_dotenv()
 
-# Per-session rate limit. In-memory and per-process - resets on restart and
-# doesn't share state across multiple app instances. Fine for a single
-# small-team deployment; a multi-instance rollout needs a shared store
-# (Redis) instead.
-RATE_LIMIT_MAX_REQUESTS = 30
-RATE_LIMIT_WINDOW_SECONDS = 3600
+# Rate limit per user, shared by all of that user's sessions in this process
+# (pipeline/ratelimit.py). Per-process: a multi-instance rollout swaps in the
+# Redis implementation behind the same interface.
+RATE_LIMIT_MAX_REQUESTS = ratelimit.MAX_REQUESTS
 
 # Local demo mode (RAG_DEMO=1, see README "Try it locally"): synthetic corpus,
 # offline answers, example questions.
@@ -235,11 +233,22 @@ def render_orders():
     if not question:
         return
 
-    with st.spinner("Querying orders..."):
-        result = rag.answer_order_question(
-            question, role, rag_chain=load_chain(), access_check=access_checker(),
-            log_context={"user": user, "mode": "orders"},
-        )
+    # A text input keeps its value across reruns, and Streamlit reruns the
+    # script on every click anywhere on the page: without this every click
+    # asked the model the same question again.
+    last = st.session_state.get("last_order_answer")
+    if last and last["key"] == (question, role):
+        result = last["result"]
+    elif not allow_request():
+        st.error(f"Rate limit reached ({RATE_LIMIT_MAX_REQUESTS} questions per hour). Please try again later.")
+        return
+    else:
+        with st.spinner("Querying orders..."):
+            result = rag.answer_order_question(
+                question, role, rag_chain=load_chain(), access_check=access_checker(),
+                log_context={"user": user, "mode": "orders"},
+            )
+        st.session_state.last_order_answer = {"key": (question, role), "result": result}
     guardrail = result["guardrail"] or ""
     if guardrail.startswith("api_error"):
         st.error(result["answer"])
@@ -269,14 +278,16 @@ STEP_LABELS = {"query_orders": ("Queried orders", "row"), "search_docs": ("Searc
                "find_file": ("Looked for files", "file")}
 
 
-# True if this session may ask another question; records the request if so.
-# Shared by the agent and (inline, below) the content chat's limit.
+# True if this user may ask another question; records the request if so.
+# Shared by every mode that can call the model. Keyed on the NAS username,
+# so a new tab does not reset it; without login (local use) every visitor is
+# "local", so the key falls back to this browser session.
 def allow_request():
-    now = time.time()
-    recent = [t for t in st.session_state.get("request_times", []) if now - t < RATE_LIMIT_WINDOW_SECONDS]
-    allowed = len(recent) < RATE_LIMIT_MAX_REQUESTS
-    st.session_state.request_times = recent + [now] if allowed else recent
-    return allowed
+    if nas_session:
+        key = f"user:{user}"
+    else:
+        key = f"session:{st.session_state.setdefault('rate_key', os.urandom(8).hex())}"
+    return ratelimit.get_rate_limiter().allow(key)
 
 
 def render_step(step):
@@ -372,8 +383,6 @@ def render_chat():
 
     if "messages" not in st.session_state:
         st.session_state.messages = []  # [{"role", "content", "sources"}]
-    if "request_times" not in st.session_state:
-        st.session_state.request_times = []
 
     for i, msg in enumerate(st.session_state.messages):
         with st.chat_message(msg["role"]):
@@ -395,24 +404,17 @@ def render_chat():
     if not question:
         return
 
-    now = time.time()
-    st.session_state.request_times = [
-        t for t in st.session_state.request_times if now - t < RATE_LIMIT_WINDOW_SECONDS
-    ]
-
     st.session_state.messages.append({"role": "user", "content": question})
     with st.chat_message("user"):
         st.markdown(question)
 
-    if len(st.session_state.request_times) >= RATE_LIMIT_MAX_REQUESTS:
+    if not allow_request():
         answer = (f"Rate limit reached ({RATE_LIMIT_MAX_REQUESTS} questions per "
                   f"hour). Please try again later.")
         sources = []
         with st.chat_message("assistant"):
             st.error(answer)
     else:
-        st.session_state.request_times.append(now)
-
         chat_history = []
         for m in st.session_state.messages[:-1]:
             cls = HumanMessage if m["role"] == "user" else AIMessage

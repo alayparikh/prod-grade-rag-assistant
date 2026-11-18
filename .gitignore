@@ -35,3 +35,6 @@ demo/web/orders.db
 
 # Private interview prep
 INTERVIEW_NOTES.md
+
+# Eval run outputs (eval/run_eval.py --metrics); the committed baseline is eval/baseline_retrieval.json
+eval/results/

@@ -50,17 +50,22 @@ Rules for all code:
 | Component | Now (demo scale) | Switch when | Scale target |
 |---|---|---|---|
 | Vector store | Chroma (embedded) | >1M chunks, multiple app instances, or filtered search at scale | pgvector (if on Postgres) or Qdrant; OpenSearch if already running it |
-| Keyword search | In-process BM25 | Index no longer fits in memory | OpenSearch / Elasticsearch, or Postgres full-text |
-| Embeddings | Local MiniLM on CPU | Indexing throughput too low | Batched GPU workers or a self-hosted embedding service |
-| Answer cache, rate limit | In-process | More than one app instance | Redis |
-| Orders DB | SQLite, read-only, role views | Real order volume / concurrency | Postgres read replica or warehouse, read-only role, row-level security |
-| Indexer | Single process | Corpus too large for one pass | Per-file jobs on a queue (SQS/Kafka/Celery) |
+| Keyword search | SQLite FTS5 on disk (`search/keyword.py`): 2 s query budget, stop words dropped, 32-term cap, per-source delete table | Index past one disk / one writer, or multiple app instances | OpenSearch / Elasticsearch, or Postgres full-text |
+| Embeddings | Local MiniLM on CPU | Indexing throughput too low (`eval/scale/bench.py --real-embeddings` measures it) | Batched GPU workers or a self-hosted embedding service |
+| Answer cache, rate limit | SQLite cache; in-process per-user rate limit behind `pipeline/ratelimit.py` | More than one app instance | Redis, same interfaces |
+| Model calls | `pipeline/llm.bounded()`: per-call timeout, retry cap, token cap on every client | Shared spend across instances or tenants | API gateway or Redis token bucket for per-user / per-tenant spend caps |
+| Orders DB | SQLite, read-only, role views, hard SQLite limits (1 MB value, 2 s budget) | Real order volume / concurrency (`eval/load/sql_load.py` measures it) | Postgres read replica or warehouse, read-only role, row-level security, statement_timeout |
+| Indexer | Single process; manifest written atomically and checkpointed every 200 files (resumes after a kill) | Corpus too large for one pass | Per-file jobs on a queue (SQS/Kafka/Celery), manifest in a table |
 | NL to SQL | One forced tool call + sqlglot guard | Multi-step / mixed questions | Agent loop with `query_orders` / `search_docs` tools, same guards inside each tool (built: `agent.py`, next row) |
 | Agent | Opt-in "Ask the agent" mode: bounded tool loop (`agent.py`), no answer cache | Users pick the wrong mode, or agent traffic makes repeat questions costly | Router sends multi-step questions to the agent; answers cached per user + index version + orders snapshot in the shared cache |
 | Demo agent answers | Chat panel docked bottom-right (`demo/web/agent.js`); a short reply to a question the agent asked back is joined to it, no other context carried. Saved example runs per role built by `demo/agent_runs.py` (real tools, scripted steps and answers); any other question runs live in the browser with fixed steps (`demo/web/liverun.js`: SQL templates + policy search, no model) | Visitors need questions planned beyond the fixed steps, or follow-ups that depend on earlier turns | Hosted agent endpoint with server-side key, spend cap and rate limit |
 | Tracing | JSON logs, optional self-hosted Langfuse | Production traffic | Central log pipeline + self-hosted tracing |
+| Health | Liveness (Streamlit), indexer staleness, readiness (`python -m pipeline.health --ready`) | Behind a load balancer | Readiness wired to the LB; SLO alerts on the event log fields |
 
-Keep this table current when a component changes.
+Keep this table current when a component changes. The failure scenarios
+behind each row, and the eval that proves each guard, are in
+`PRODUCTION_READINESS.md`; production-scale evals are defined in
+`.claude/evals/production.md`.
 
 ## 3. Keep docs and UI in sync
 

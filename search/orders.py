@@ -28,6 +28,27 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE_SQL = os.path.join(ROOT, "eval", "fixtures", "orders.sql")
 MAX_ROWS = 50
 TIME_BUDGET_S = 2.0
+# Hard limits set on every connection. The time budget above is checked by a
+# progress handler between VM steps, which never fires inside one huge
+# allocation: `hex(zeroblob(900000000))` would try to build a 1.8 GB string
+# in a single step. SQLite enforces these itself, so no SQL can exceed them.
+MAX_VALUE_BYTES = 1_000_000
+CONNECTION_LIMITS = {
+    sqlite3.SQLITE_LIMIT_LENGTH: MAX_VALUE_BYTES,     # any string or blob value
+    sqlite3.SQLITE_LIMIT_SQL_LENGTH: 20_000,          # the statement text
+    sqlite3.SQLITE_LIMIT_EXPR_DEPTH: 100,
+    sqlite3.SQLITE_LIMIT_COMPOUND_SELECT: 10,
+    sqlite3.SQLITE_LIMIT_ATTACHED: 0,
+}
+# Functions nothing legitimate needs. Rejected by name before the query runs,
+# so the model gets a clear reason; the limits above still bound anything that
+# slips past (printf width tricks, nested replace()). An allow-list would be
+# stricter but rejects legitimate functions the model reaches for (julianday,
+# iif, printf for formatting), and those failures would only show up live.
+DENIED_FUNCTIONS = frozenset({
+    "load_extension", "zeroblob", "randomblob", "fts3_tokenizer", "readfile",
+    "writefile", "edit", "unhex", "likelihood", "likely", "unlikely",
+})
 
 ROLES = {
     "admin": {"scope": "1", "hidden": []},
@@ -91,12 +112,23 @@ def ensure_db(path):
 
 
 def connect(path):
-    return sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
+    for limit, value in CONNECTION_LIMITS.items():
+        connection.setlimit(limit, value)
+    return connection
 
 
 def apply_role(connection, role):
     r = ROLES.get(role, ROLES["none"])  # unknown role: no access
     hide = lambda col: f"NULL AS {col}" if col in r["hidden"] else col  # noqa: E731
+    # A role that sees every customer gets no row filter on the child views.
+    # The IN (...) filter removes nothing for it, and with an index on
+    # orders.customer_id SQLite plans it as one index probe per order instead
+    # of one scan: measured 3x slower at 200k orders (eval/load/sql_load.py
+    # --indexes). Restricted roles keep the filter; that is what scopes them.
+    unrestricted = r["scope"] == "1"
+    orders_scope = "1" if unrestricted else "customer_id IN (SELECT id FROM customers_v)"
+    child_scope = "1" if unrestricted else "order_id IN (SELECT id FROM orders_v)"
     connection.executescript(f"""
         DROP VIEW IF EXISTS temp.customers_v; DROP VIEW IF EXISTS temp.orders_v;
         DROP VIEW IF EXISTS temp.order_items_v; DROP VIEW IF EXISTS temp.shipments_v;
@@ -104,11 +136,11 @@ def apply_role(connection, role):
         CREATE TEMP VIEW customers_v AS
           SELECT id, name, region, account_tier, {hide('email')} FROM customers WHERE {r['scope']};
         CREATE TEMP VIEW orders_v AS
-          SELECT * FROM orders WHERE customer_id IN (SELECT id FROM customers_v);
+          SELECT * FROM orders WHERE {orders_scope};
         CREATE TEMP VIEW order_items_v AS
-          SELECT * FROM order_items WHERE order_id IN (SELECT id FROM orders_v);
+          SELECT * FROM order_items WHERE {child_scope};
         CREATE TEMP VIEW shipments_v AS
-          SELECT * FROM shipments WHERE order_id IN (SELECT id FROM orders_v);
+          SELECT * FROM shipments WHERE {child_scope};
         CREATE TEMP VIEW products_v AS
           SELECT sku, model, {hide('unit_price')}, lead_time_days FROM products;""")
     return {"hidden": set(r["hidden"]), "denied": bool(r.get("denied"))}
@@ -139,6 +171,10 @@ def guard(sql):
         if isinstance(node, (exp.Insert, exp.Update, exp.Delete, exp.Drop, exp.Create,
                              exp.Alter, exp.Command, exp.Pragma, exp.Attach)):
             raise GuardError(f"{node.key.upper()} is not allowed")
+    for func in tree.find_all(exp.Anonymous):
+        name = str(func.name).lower()
+        if name in DENIED_FUNCTIONS or name.startswith("sqlite_"):
+            raise GuardError(f"function {name}() is not allowed")
     ctes = {cte.alias_or_name for cte in tree.find_all(exp.CTE)}
     for table in tree.find_all(exp.Table):
         name = table.name
@@ -164,6 +200,9 @@ def run(connection, sql):
     except sqlite3.OperationalError as e:
         if "interrupted" in str(e):
             raise GuardError(f"query exceeded the {TIME_BUDGET_S:.0f}s budget") from e
+        raise GuardError(f"query failed: {e}") from e
+    except sqlite3.Error as e:
+        # DataError "string or blob too big" is a hit on CONNECTION_LIMITS.
         raise GuardError(f"query failed: {e}") from e
     finally:
         connection.set_progress_handler(None, 0)

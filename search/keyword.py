@@ -16,8 +16,12 @@ whitespace tokenizer made that one opaque token and any query for
 "linkedin" scored zero - the bug rag._tokenize() was written to fix, kept
 here because the storage moved but the failure mode did not.
 """
+import json
+import logging
 import os
 import re
+import threading
+import time
 
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
@@ -50,9 +54,44 @@ CREATE TABLE IF NOT EXISTS chunk_groups (
 );
 CREATE INDEX IF NOT EXISTS chunk_groups_id ON chunk_groups(chunk_id);
 CREATE INDEX IF NOT EXISTS chunk_groups_name ON chunk_groups(group_name);
+
+-- Which FTS rows belong to which file. `source` inside chunks_fts is
+-- UNINDEXED, so deleting a file's rows by it scanned the whole index once
+-- per changed file: minutes per file at millions of chunks.
+CREATE TABLE IF NOT EXISTS chunk_sources (
+    fts_rowid INTEGER PRIMARY KEY,
+    chunk_id  TEXT NOT NULL,
+    source    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS chunk_sources_source ON chunk_sources(source);
 """
 
 _FTS_SPECIAL = re.compile(r"[^\w\s]", re.UNICODE)
+
+# Common words match most of the corpus: every one OR-ed into the query
+# walks a posting list as long as the index. Dropped unless the question is
+# nothing but stop words.
+STOP_WORDS = frozenset("""
+a an and are as at be by can do does for from has have how i in is it its
+me my of on or our that the their them there these this to was we what when
+where which who whom why will with you your
+""".split())
+MAX_QUERY_TERMS = 32
+# Wall-clock budget for one keyword query. Past it the query is interrupted
+# and the keyword half of retrieval returns nothing (vector search still
+# answers), logged as keyword_timeout.
+QUERY_TIME_BUDGET_S = float(os.environ.get("RAG_KEYWORD_TIMEOUT_S", 2.0))
+# Max parameters per IN (...) list.
+_BATCH = 500
+
+# The deadline is per thread: in the web app one connection is shared by
+# Streamlit's pool threads (serialized SQLite), and the progress handler runs
+# on whichever thread is executing.
+_deadline = threading.local()
+
+
+def _past_deadline():
+    return int(time.monotonic() > getattr(_deadline, "at", float("inf")))
 
 
 def connect(db_path=None, shared_across_threads=False, persist_path=None):
@@ -64,6 +103,8 @@ def connect(db_path=None, shared_across_threads=False, persist_path=None):
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA journal_mode=WAL")
     connection.executescript(SCHEMA)
+    # Installed once; only search() sets a deadline, so writes are unaffected.
+    connection.set_progress_handler(_past_deadline, 10_000)
     return connection
 
 
@@ -72,10 +113,14 @@ def connect(db_path=None, shared_across_threads=False, persist_path=None):
 def add_chunks(connection, chunks, ids):
     for chunk, chunk_id in zip(chunks, ids):
         metadata = chunk.metadata or {}
-        connection.execute(
+        cursor = connection.execute(
             "INSERT INTO chunks_fts (text, chunk_id, source, folder) VALUES (?, ?, ?, ?)",
             (chunk.page_content, chunk_id, metadata.get("source", ""),
              metadata.get("folder", "")),
+        )
+        connection.execute(
+            "INSERT INTO chunk_sources (fts_rowid, chunk_id, source) VALUES (?, ?, ?)",
+            (cursor.lastrowid, chunk_id, metadata.get("source", "")),
         )
         for key, value in metadata.items():
             if key.startswith("group_") and value:
@@ -86,14 +131,29 @@ def add_chunks(connection, chunks, ids):
     connection.commit()
 
 
+def _in_batches(values):
+    for i in range(0, len(values), _BATCH):
+        batch = values[i:i + _BATCH]
+        yield batch, ",".join("?" for _ in batch)
+
+
 def delete_source(connection, source):
-    ids = [r["chunk_id"] for r in connection.execute(
-        "SELECT chunk_id FROM chunks_fts WHERE source = ?", (source,))]
-    if ids:
-        placeholders = ",".join("?" for _ in ids)
-        connection.execute(
-            f"DELETE FROM chunk_groups WHERE chunk_id IN ({placeholders})", ids)
-    connection.execute("DELETE FROM chunks_fts WHERE source = ?", (source,))
+    rows = connection.execute(
+        "SELECT fts_rowid, chunk_id FROM chunk_sources WHERE source = ?", (source,)).fetchall()
+    if rows:
+        for batch, marks in _in_batches([r["fts_rowid"] for r in rows]):
+            connection.execute(f"DELETE FROM chunks_fts WHERE rowid IN ({marks})", batch)
+        for batch, marks in _in_batches([r["chunk_id"] for r in rows]):
+            connection.execute(f"DELETE FROM chunk_groups WHERE chunk_id IN ({marks})", batch)
+        connection.execute("DELETE FROM chunk_sources WHERE source = ?", (source,))
+    else:
+        # Rows written before chunk_sources existed: the slow path, once per
+        # file, after which the file's new rows are tracked.
+        ids = [r["chunk_id"] for r in connection.execute(
+            "SELECT chunk_id FROM chunks_fts WHERE source = ?", (source,))]
+        for batch, marks in _in_batches(ids):
+            connection.execute(f"DELETE FROM chunk_groups WHERE chunk_id IN ({marks})", batch)
+        connection.execute("DELETE FROM chunks_fts WHERE source = ?", (source,))
     connection.commit()
 
 
@@ -101,18 +161,39 @@ def count(connection):
     return connection.execute("SELECT COUNT(*) AS n FROM chunks_fts").fetchone()["n"]
 
 
+def is_empty(connection):
+    """Constant time, unlike count(): checked on every retriever build."""
+    return connection.execute("SELECT 1 FROM chunks_fts LIMIT 1").fetchone() is None
+
+
 # Free-text questions are not FTS5 syntax: an apostrophe, a hyphen or a
 # stray parenthesis is a syntax error, not a search. Terms are OR-ed
 # because a relevant chunk rarely contains every word of the question.
 def to_match_expression(text):
     words = [w for w in _FTS_SPECIAL.sub(" ", text).split() if len(w) > 1]
-    return " OR ".join(f'"{w}"' for w in words)
+    content = [w for w in words if w.lower() not in STOP_WORDS] or words
+    unique = list(dict.fromkeys(w.lower() for w in content))[:MAX_QUERY_TERMS]
+    return " OR ".join(f'"{w}"' for w in unique)
 
 
 def search(connection, query, k, allowed_groups=None):
     expression = to_match_expression(query)
     if not expression:
         return []
+    _deadline.at = time.monotonic() + QUERY_TIME_BUDGET_S
+    try:
+        return _search(connection, expression, k, allowed_groups)
+    except Exception as e:  # sqlite3.OperationalError: interrupted
+        if "interrupted" not in str(e):
+            raise
+        logging.getLogger("rag.events").info(json.dumps(
+            {"event": "keyword_timeout", "budget_s": QUERY_TIME_BUDGET_S, "query_len": len(query)}))
+        return []
+    finally:
+        _deadline.at = float("inf")
+
+
+def _search(connection, expression, k, allowed_groups):
 
     sql = ["SELECT text, chunk_id, source, folder, bm25(chunks_fts) AS score",
            "FROM chunks_fts WHERE chunks_fts MATCH ?"]

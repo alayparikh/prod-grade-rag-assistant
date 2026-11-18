@@ -61,6 +61,7 @@ from pydantic import BaseModel, Field
 
 from pipeline import cache as answer_cache
 from pipeline import chunking, grading, rerank, tracing
+from pipeline.llm import bounded
 from pipeline.prompts import ANSWER_PROMPT, CONTEXTUALIZE_PROMPT
 from search import keyword
 
@@ -597,10 +598,26 @@ def load_manifest():
     return {}
 
 
+# Atomic: written to a temp file and renamed, so a crash mid-write leaves
+# the previous manifest rather than a truncated one that would make the
+# next run re-embed the whole corpus.
+#
+# Scale path: one JSON file is read and rewritten whole, which is fine to
+# ~10^5 files. Past that the manifest moves into a table (the crawler's
+# SQLite catalogue, or Postgres) keyed on path, updated per file by the
+# per-file indexing jobs.
 def save_manifest(manifest):
     os.makedirs(PERSIST_PATH, exist_ok=True)
-    with open(MANIFEST_PATH, "w") as f:
+    tmp = f"{MANIFEST_PATH}.tmp"
+    with open(tmp, "w") as f:
         json.dump(manifest, f, indent=2, sort_keys=True)
+    os.replace(tmp, MANIFEST_PATH)
+
+
+# A long run saves its progress every this many indexed files, so a run
+# killed part-way (OOM, container restart, deploy) resumes where it stopped
+# instead of re-embedding everything it had already done.
+MANIFEST_CHECKPOINT_EVERY = int(os.environ.get("RAG_MANIFEST_CHECKPOINT", 200))
 
 
 # Split documents into chunks - heading-aware where the document has
@@ -672,7 +689,12 @@ def sync_vectorstore(store, paths=None):
     if not changed_or_new and not removed:
         print(f"Index up to date ({store._collection.count()} chunks, "
               f"{reads} file(s) re-read).")
-        save_manifest(current_stamps)  # refresh mtimes so the next run reads none
+        # Refresh mtimes so the next run reads none - but only when one
+        # moved. The manifest's mtime is the answer cache's index version,
+        # so rewriting it on a no-op night would throw away every cached
+        # answer for nothing.
+        if current_stamps != manifest:
+            save_manifest(current_stamps)
         return
 
     keyword_index = _keyword_index()
@@ -683,6 +705,14 @@ def sync_vectorstore(store, paths=None):
             keyword.delete_source(keyword_index, path)
 
     folder_map, default_groups = load_permissions()
+
+    # What is actually in the index right now: unchanged files, plus each
+    # changed file once its new chunks are written. Checkpointed, so a run
+    # that dies part-way resumes; a changed file not yet re-added is absent
+    # from it and is picked up as new next time.
+    changed_set = set(changed_or_new)
+    progress = {p: s for p, s in current_stamps.items() if p not in changed_set}
+    done_since_checkpoint = 0
 
     added_chunks = 0
     for path in changed_or_new:
@@ -712,6 +742,11 @@ def sync_vectorstore(store, paths=None):
                     log_event({"event": "keyword_index_skipped", "source": path,
                                "reason": "vector store returned no ids"})
         added_chunks += len(chunks)
+        progress[path] = current_stamps[path]
+        done_since_checkpoint += 1
+        if done_since_checkpoint >= MANIFEST_CHECKPOINT_EVERY:
+            save_manifest(progress)
+            done_since_checkpoint = 0
 
     save_manifest(current_stamps)
 
@@ -763,12 +798,30 @@ def compute_k(corpus_size):
 # Chunk count visible under a group filter, used to size retrieval. Kept
 # separate from build_retriever so build_chain can compute the unfiltered
 # context ceiling without building a second retriever.
+#
+# Bounded: compute_k stops growing at RETRIEVAL_K_MAX, so counting past the
+# size that reaches it changes nothing. Without the limit this pulled every
+# chunk id in the collection into memory on each chain build - millions of
+# strings per signed-in user at scale.
+CORPUS_SIZE_CAP = RETRIEVAL_K_MAX * RETRIEVAL_K_PER_CHUNKS
+
+
 def _corpus_size(vectorstore, allowed_groups=None):
     where_filter = build_group_filter(allowed_groups)
-    get_kwargs = {"include": []}
+    if not where_filter:
+        collection = getattr(vectorstore, "_collection", None)
+        if collection is not None:
+            return min(collection.count(), CORPUS_SIZE_CAP)
+    get_kwargs = {"include": [], "limit": CORPUS_SIZE_CAP}
     if where_filter:
         get_kwargs["where"] = where_filter
     return len(vectorstore.get(**get_kwargs).get("ids", []))
+
+
+# The in-memory BM25 fallback (no keyword index on disk) loads every chunk
+# it may search. Capped so a missing keyword index on a large corpus
+# degrades recall instead of exhausting memory; the event says it happened.
+BM25_FALLBACK_MAX_CHUNKS = int(os.environ.get("RAG_BM25_FALLBACK_MAX_CHUNKS", 50_000))
 
 
 # Combine vector similarity search with BM25 keyword search, both scoped to
@@ -779,7 +832,7 @@ def _corpus_size(vectorstore, allowed_groups=None):
 def build_retriever(vectorstore, allowed_groups=None, over_fetch=1):
     where_filter = build_group_filter(allowed_groups)
     keyword_index = _keyword_index(shared_across_threads=True)
-    use_keyword_index = keyword_index is not None and keyword.count(keyword_index) > 0
+    use_keyword_index = keyword_index is not None and not keyword.is_empty(keyword_index)
 
     # Corpus size only. Fetching documents and metadata here was what made
     # building a retriever cost a full corpus load; with the keyword index
@@ -788,10 +841,12 @@ def build_retriever(vectorstore, allowed_groups=None, over_fetch=1):
         corpus_size = _corpus_size(vectorstore, allowed_groups)
         all_chunks = None
     else:
-        get_kwargs = {"include": ["documents", "metadatas"]}
+        get_kwargs = {"include": ["documents", "metadatas"], "limit": BM25_FALLBACK_MAX_CHUNKS}
         if where_filter:
             get_kwargs["where"] = where_filter
         raw = vectorstore.get(**get_kwargs)
+        if len(raw.get("ids", [])) >= BM25_FALLBACK_MAX_CHUNKS:
+            log_event({"event": "bm25_fallback_truncated", "max_chunks": BM25_FALLBACK_MAX_CHUNKS})
         all_chunks = [
             Document(page_content=doc, metadata=meta)
             for doc, meta in zip(raw["documents"], raw["metadatas"])
@@ -963,7 +1018,7 @@ def build_chain(vectorstore, allowed_groups=None, over_fetch=1, use_cache=True):
     online = llm_enabled()
     # Offline, no client is constructed at all - not merely unused - so
     # there is no code path that can reach the API.
-    llm = ChatAnthropic(model=MODEL, max_tokens=16000) if online else None
+    llm = ChatAnthropic(model=MODEL, **bounded(16000)) if online else None
     history_aware_retriever = HistoryAwareRetriever(llm, retriever, CONTEXTUALIZE_PROMPT)
     if online:
         answer_chain = AnswerChain(llm.with_structured_output(AnswerWithSources), ANSWER_PROMPT)
@@ -972,7 +1027,7 @@ def build_chain(vectorstore, allowed_groups=None, over_fetch=1, use_cache=True):
 
     grader = rewriter = None
     if online and grading.GRADING_ENABLED:
-        small_llm = ChatAnthropic(model=grading.GRADER_MODEL, max_tokens=1024)
+        small_llm = ChatAnthropic(model=grading.GRADER_MODEL, **bounded(1024))
         grader = grading.RelevanceGrader(small_llm)
         rewriter = grading.QueryRewriter(small_llm)
 
@@ -1212,6 +1267,7 @@ def _stream_answer(answer_chain, inputs, config, on_token):
 # The orders database. Built from the fixture SQL on first use in dev and the
 # demo; a deployment points this at a read-only copy of the real one.
 ORDERS_DB = os.environ.get("RAG_ORDERS_DB", os.path.join(PERSIST_PATH, "orders.db"))
+ORDERS_UNAVAILABLE = "Order data is unavailable right now. Please try again later."
 
 ORDER_ANSWER_PROMPT = """Answer the question from the query result below, and from the policy
 passage if one is given. One to three sentences. Quote order numbers, dates and statuses
@@ -1264,12 +1320,20 @@ def answer_order_question(question, role, rag_chain=None, access_check=None, log
         return finish("offline", answer="Order questions need the Claude API in this app. The browser demo "
                                         "answers them offline with a fixed set of query types.")
 
-    connection = orders.connect(orders.ensure_db(ORDERS_DB))
+    # A missing replica, a locked or corrupt file: the question gets a clear
+    # answer and the event log a tag, instead of an exception in the UI.
     try:
-        access = orders.apply_role(connection, role)
+        connection = orders.connect(orders.ensure_db(ORDERS_DB))
+    except sqlite3.Error as e:
+        return finish(f"orders_unavailable:{e}", answer=ORDERS_UNAVAILABLE)
+    try:
+        try:
+            access = orders.apply_role(connection, role)
+        except sqlite3.Error as e:
+            return finish(f"orders_unavailable:{e}", answer=ORDERS_UNAVAILABLE)
         if access["denied"]:
             return finish("orders_denied", answer="Your role has no access to order data.")
-        llm = ChatAnthropic(model=MODEL, max_tokens=1024)
+        llm = ChatAnthropic(model=MODEL, **bounded(1024))
         with get_usage_metadata_callback() as usage_cb:
             usage = lambda: summarize_usage(usage_cb.usage_metadata)  # noqa: E731
             try:

@@ -32,6 +32,7 @@ user + index version + an orders snapshot id, in the shared cache.
 """
 import json
 import os
+import sqlite3
 import time
 from dataclasses import dataclass, field
 
@@ -41,6 +42,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 import rag
 from pipeline import tracing
+from pipeline.llm import bounded
 from pipeline.prompts import AGENT_SYSTEM_PROMPT
 from search import metadata, orders
 
@@ -79,6 +81,8 @@ One SELECT, no comments, no other tables.
 """
 ORDERS_DENIED_PROMPT = ("- The asker has no access to order data. If the question needs it, "
                         "say so.\n")
+ORDERS_UNAVAILABLE_PROMPT = ("- Order data is unavailable right now. If the question needs it, "
+                             "say so and answer what the documents can.\n")
 FILES_PROMPT = ("- find_file: find files by words in their name or folder, for requests "
                 "to locate a file rather than read one.\n")
 
@@ -238,8 +242,12 @@ class Toolbox:
 
 
 def _system_prompt(connection, order_access, file_index):
-    order_text = (ORDERS_DENIED_PROMPT if order_access["denied"]
-                  else ORDERS_PROMPT.format(facts=orders.schema_facts(connection)))
+    if order_access.get("unavailable"):
+        order_text = ORDERS_UNAVAILABLE_PROMPT
+    elif order_access["denied"]:
+        order_text = ORDERS_DENIED_PROMPT
+    else:
+        order_text = ORDERS_PROMPT.format(facts=orders.schema_facts(connection))
     return AGENT_SYSTEM_PROMPT.format(
         max_steps=MAX_STEPS, orders=order_text,
         files=FILES_PROMPT if file_index is not None else "")
@@ -269,13 +277,17 @@ def _sole_terminal(calls):
     return None
 
 
-def _execute(call, toolbox, steps, on_step):
+def _execute(call, toolbox, steps, on_step, deadline=None):
     """Run one tool call and return the message that reports it to the model."""
     name, args = call["name"], call.get("args") or {}
     if name in TERMINAL_TOOLS:
         text = "Call this on its own, after you have read the other results."
     elif len(steps) >= MAX_STEPS:
         text = "Not run: the tool-call limit for this question is reached."
+    elif deadline is not None and time.monotonic() >= deadline:
+        # Checked per tool, not only per model turn: one turn can ask for
+        # several searches, each with its own grading call.
+        text = "Not run: the time limit for this question is reached."
     else:
         started = time.perf_counter()
         result = toolbox.run(name, args)
@@ -291,16 +303,20 @@ def _execute(call, toolbox, steps, on_step):
     return ToolMessage(content=text, tool_call_id=call["id"])
 
 
-def _run_loop(llm, toolbox, messages, steps, on_step, deadline, config):
+def _run_loop(llm, toolbox, messages, steps, on_step, deadline, config, spent=None):
     """Returns (terminal tool call or None, the bound that was hit or None).
     At most MAX_STEPS + 1 model calls: the working turns, then one closing
-    call that is only offered ask_user and final_answer."""
+    call that is only offered ask_user and final_answer.
+
+    spent, when given, returns every token the question has used so far,
+    including the grading and rewrite calls inside search_docs, which the
+    agent's own replies do not show."""
     specs = toolbox.specs()
     working = llm.bind_tools(specs, tool_choice="any")
     closing = llm.bind_tools([s for s in specs if s["name"] in TERMINAL_TOOLS], tool_choice="any")
     tokens = 0
     for _ in range(MAX_STEPS + 1):
-        bound = _bound_hit(len(steps), tokens, deadline)
+        bound = _bound_hit(len(steps), max(tokens, spent() if spent else 0), deadline)
         if bound:
             messages.append(HumanMessage(content=CLOSING_NOTE))
         reply = tracing.invoke(closing if bound else working, messages, config)
@@ -312,7 +328,7 @@ def _run_loop(llm, toolbox, messages, steps, on_step, deadline, config):
             return terminal, bound
         if bound or not calls:
             return None, bound or "no_tool_call"
-        messages.extend(_execute(call, toolbox, steps, on_step) for call in calls)
+        messages.extend(_execute(call, toolbox, steps, on_step, deadline) for call in calls)
     return None, "step_cap"
 
 
@@ -385,21 +401,34 @@ def answer_agent_question(question, chat_history, rag_chain, role, access_check=
     if llm is None and not rag.llm_enabled():
         return finish("offline", answer=OFFLINE_ANSWER)
 
-    connection = orders.connect(orders.ensure_db(rag.ORDERS_DB))
+    # Orders unavailable (missing replica, locked or corrupt file) degrades
+    # the agent to documents only; it does not fail the question.
+    connection = None
     try:
+        connection = orders.connect(orders.ensure_db(rag.ORDERS_DB))
         order_access = orders.apply_role(connection, role)
+    except sqlite3.Error as e:
+        rag.log_event({"event": "orders_unavailable", "error": str(e)[:200], **log_context})
+        if connection is not None:
+            connection.close()
+        connection = None
+        order_access = {"hidden": set(), "denied": True, "unavailable": True}
+    try:
         config = tracing.run_config(user=user or log_context.get("user"), tags=["agent"])
         toolbox = Toolbox(rag_chain, role, access_check, connection, order_access,
                           file_index=file_index, timer=timer, config=config)
-        llm = llm or ChatAnthropic(model=rag.MODEL, max_tokens=CALL_MAX_TOKENS,
-                                   timeout=CALL_TIMEOUT_S, max_retries=CALL_MAX_RETRIES)
+        llm = llm or ChatAnthropic(model=rag.MODEL, **bounded(
+            CALL_MAX_TOKENS, timeout=min(CALL_TIMEOUT_S, TIMEOUT_S), max_retries=CALL_MAX_RETRIES))
         messages = [SystemMessage(content=_system_prompt(connection, order_access, file_index)),
                     *chat_history, HumanMessage(content=question)]
         with get_usage_metadata_callback() as usage_cb:
+            def spent():
+                return sum(u.get("total_tokens") or u.get("input_tokens", 0) + u.get("output_tokens", 0)
+                           for u in usage_cb.usage_metadata.values())
             try:
                 with timer.step("agent"):
                     terminal, bound = _run_loop(llm, toolbox, messages, steps, on_step,
-                                                time.monotonic() + TIMEOUT_S, config)
+                                                time.monotonic() + TIMEOUT_S, config, spent)
             except rag._API_ERRORS as e:
                 message, tag = rag._api_error_message(e)
                 return finish(tag, rag.summarize_usage(usage_cb.usage_metadata), answer=message)
@@ -408,4 +437,5 @@ def answer_agent_question(question, chat_history, rag_chain, role, access_check=
         return finish(guardrail, usage, answer=answer, sources_used=sources,
                       used_orders=toolbox.used_orders, clarification=clarification)
     finally:
-        connection.close()
+        if connection is not None:
+            connection.close()

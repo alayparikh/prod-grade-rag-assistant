@@ -1,0 +1,338 @@
+{
+  "mode": "retrieval",
+  "golden_set": "eval/fixtures/golden_set.yaml",
+  "summary": {
+    "total": 55,
+    "passed": 18,
+    "failed": 0,
+    "errored": 0,
+    "skipped": 37,
+    "ranked_cases": 15,
+    "mrr": 0.9667,
+    "hit@1": 0.9333,
+    "hit@3": 1.0,
+    "hit@5": 1.0
+  },
+  "cases": [
+    {
+      "id": "docx-hyperlink-linkedin",
+      "status": "PASS",
+      "reason": "",
+      "rank": 1,
+      "ranked": true,
+      "num_chunks": 4
+    },
+    {
+      "id": "docx-hyperlink-github",
+      "status": "PASS",
+      "reason": "",
+      "rank": 1,
+      "ranked": true,
+      "num_chunks": 4
+    },
+    {
+      "id": "keyword-email",
+      "status": "PASS",
+      "reason": "",
+      "rank": 1,
+      "ranked": true,
+      "num_chunks": 4
+    },
+    {
+      "id": "resume-project-name",
+      "status": "PASS",
+      "reason": "",
+      "rank": 1,
+      "ranked": true,
+      "num_chunks": 8
+    },
+    {
+      "id": "resume-current-employer",
+      "status": "PASS",
+      "reason": "",
+      "rank": 1,
+      "ranked": true,
+      "num_chunks": 6
+    },
+    {
+      "id": "handbook-deploy-window",
+      "status": "PASS",
+      "reason": "",
+      "rank": 1,
+      "ranked": true,
+      "num_chunks": 7
+    },
+    {
+      "id": "handbook-sev1",
+      "status": "PASS",
+      "reason": "",
+      "rank": 1,
+      "ranked": true,
+      "num_chunks": 6
+    },
+    {
+      "id": "negative-salary",
+      "status": "SKIP",
+      "reason": "needs --live"
+    },
+    {
+      "id": "negative-unrelated",
+      "status": "SKIP",
+      "reason": "needs --live"
+    },
+    {
+      "id": "multi-turn-employer-then-work",
+      "status": "SKIP",
+      "reason": "needs --live"
+    },
+    {
+      "id": "safety-prompt-injection",
+      "status": "SKIP",
+      "reason": "needs --live"
+    },
+    {
+      "id": "resume-prior-employer",
+      "status": "PASS",
+      "reason": "",
+      "rank": 1,
+      "ranked": true,
+      "num_chunks": 7
+    },
+    {
+      "id": "roster-role-lookup",
+      "status": "PASS",
+      "reason": "",
+      "rank": 1,
+      "ranked": true,
+      "num_chunks": 4
+    },
+    {
+      "id": "runbook-backup-retention",
+      "status": "PASS",
+      "reason": "",
+      "rank": 1,
+      "ranked": true,
+      "num_chunks": 7
+    },
+    {
+      "id": "heading-split-load-balancer",
+      "status": "PASS",
+      "reason": "",
+      "rank": 1,
+      "ranked": true,
+      "num_chunks": 6
+    },
+    {
+      "id": "roster-count-engineers",
+      "status": "PASS",
+      "reason": "",
+      "rank": 2,
+      "ranked": true,
+      "num_chunks": 6
+    },
+    {
+      "id": "roster-list-engineers",
+      "status": "PASS",
+      "reason": "",
+      "rank": 1,
+      "ranked": true,
+      "num_chunks": 7
+    },
+    {
+      "id": "find-file-by-topic",
+      "status": "PASS",
+      "reason": ""
+    },
+    {
+      "id": "find-file-by-person",
+      "status": "PASS",
+      "reason": ""
+    },
+    {
+      "id": "find-file-distinctive-word",
+      "status": "PASS",
+      "reason": ""
+    },
+    {
+      "id": "docs-hold-reason",
+      "status": "PASS",
+      "reason": "",
+      "rank": 1,
+      "ranked": true,
+      "num_chunks": 5
+    },
+    {
+      "id": "docs-warranty",
+      "status": "PASS",
+      "reason": "",
+      "rank": 1,
+      "ranked": true,
+      "num_chunks": 5
+    },
+    {
+      "id": "orders-status-held",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-status-paraphrase",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-tracking",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-tracking-same-day",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-items",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-late",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-on-hold",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-customer",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-count-by-status",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-shipped-last-week",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-needs-order-number",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-my-orders",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-our-orders",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-my-order-number",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-not-a-query",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-contractor-west-only",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-contractor-other-region",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-engineer-prices-hidden",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "orders-hr-denied",
+      "status": "SKIP",
+      "reason": "needs --live (Claude path); the browser translator is checked by demo/check_search.mjs"
+    },
+    {
+      "id": "agent-held-order-action",
+      "status": "SKIP",
+      "reason": "needs --live (the agent chooses its steps)"
+    },
+    {
+      "id": "agent-late-holds-explained",
+      "status": "SKIP",
+      "reason": "needs --live (the agent chooses its steps)"
+    },
+    {
+      "id": "agent-warranty-check",
+      "status": "SKIP",
+      "reason": "needs --live (the agent chooses its steps)"
+    },
+    {
+      "id": "agent-catalog-then-count",
+      "status": "SKIP",
+      "reason": "needs --live (the agent chooses its steps)"
+    },
+    {
+      "id": "agent-late-by-region",
+      "status": "SKIP",
+      "reason": "needs --live (the agent chooses its steps)"
+    },
+    {
+      "id": "agent-needs-order-number",
+      "status": "SKIP",
+      "reason": "needs --live (the agent chooses its steps)"
+    },
+    {
+      "id": "agent-not-in-documents",
+      "status": "SKIP",
+      "reason": "needs --live (the agent chooses its steps)"
+    },
+    {
+      "id": "agent-contractor-west-only",
+      "status": "SKIP",
+      "reason": "needs --live (the agent chooses its steps)"
+    },
+    {
+      "id": "agent-engineer-emails-hidden",
+      "status": "SKIP",
+      "reason": "needs --live (the agent chooses its steps)"
+    },
+    {
+      "id": "agent-hr-no-orders",
+      "status": "SKIP",
+      "reason": "needs --live (the agent chooses its steps)"
+    },
+    {
+      "id": "agent-my-orders",
+      "status": "SKIP",
+      "reason": "needs --live (the agent chooses its steps)"
+    },
+    {
+      "id": "agent-other-order-late",
+      "status": "SKIP",
+      "reason": "needs --live (the agent chooses its steps)"
+    },
+    {
+      "id": "agent-customer-orders",
+      "status": "SKIP",
+      "reason": "needs --live (the agent chooses its steps)"
+    },
+    {
+      "id": "agent-off-topic",
+      "status": "SKIP",
+      "reason": "needs --live (the agent chooses its steps)"
+    }
+  ]
+}

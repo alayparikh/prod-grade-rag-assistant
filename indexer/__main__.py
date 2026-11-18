@@ -55,7 +55,9 @@ def run_summaries(connection, verbose=True):
         print("Skipping summaries: ANTHROPIC_API_KEY is not set.", file=sys.stderr)
         return None
 
-    llm = ChatAnthropic(model=summarize.SUMMARY_MODEL, max_tokens=200)
+    from pipeline.llm import bounded
+
+    llm = ChatAnthropic(model=summarize.SUMMARY_MODEL, **bounded(200))
     stats = summarize.summarize_folders(connection, llm)
     rag.log_event({"event": "summaries", **stats})
     if verbose:

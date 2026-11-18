@@ -67,11 +67,53 @@ def check(persist_path, max_age_hours=MAX_AGE_HOURS, now=None):
                    + (f" (last run failed: {status['error']})" if status.get("error") else ""))
 
 
+def ready(persist_path, orders_db=None):
+    """Readiness, as opposed to liveness: can this instance answer a question
+    right now? Opens what a question needs - the keyword index and the
+    orders database - read-only, with a short timeout. Staleness is not part
+    of it: a day-old index still answers, and failing readiness on it would
+    take every instance out of the load balancer at once.
+
+    Returns (ready, [problems])."""
+    import sqlite3
+
+    problems = []
+    chunks = os.environ.get("RAG_CHUNK_DB") or os.path.join(persist_path, "chunks.sqlite")
+    try:
+        connection = sqlite3.connect(f"file:{chunks}?mode=ro", uri=True, timeout=2)
+        try:
+            if connection.execute("SELECT 1 FROM chunks_fts LIMIT 1").fetchone() is None:
+                problems.append("keyword index is empty")
+        finally:
+            connection.close()
+    except sqlite3.Error as e:
+        problems.append(f"keyword index unreadable: {e}")
+
+    if orders_db:
+        try:
+            connection = sqlite3.connect(f"file:{orders_db}?mode=ro", uri=True, timeout=2)
+            try:
+                connection.execute("SELECT value FROM meta WHERE key = 'today'").fetchone()
+            finally:
+                connection.close()
+        except sqlite3.Error as e:
+            problems.append(f"orders database unreadable: {e}")
+    return not problems, problems
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Exit non-zero when the index is stale")
     parser.add_argument("--persist-path", default=os.environ.get("RAG_PERSIST_PATH", "./chroma_db"))
     parser.add_argument("--max-age-hours", type=float, default=MAX_AGE_HOURS)
+    parser.add_argument("--ready", action="store_true",
+                        help="readiness instead: exit 1 unless the index and orders DB open")
+    parser.add_argument("--orders-db", default=os.environ.get("RAG_ORDERS_DB"))
     args = parser.parse_args(argv)
+    if args.ready:
+        orders_db = args.orders_db or os.path.join(args.persist_path, "orders.db")
+        ok, problems = ready(args.persist_path, orders_db)
+        print("ready" if ok else "; ".join(problems))
+        return 0 if ok else 1
     healthy, message = check(args.persist_path, args.max_age_hours)
     print(message)
     return 0 if healthy else 1

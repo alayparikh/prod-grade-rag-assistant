@@ -21,13 +21,17 @@ Usage:
     python eval/run_eval.py --golden-set path/to.yaml
 """
 import argparse
+import json
 import os
 import sys
+import time
 
 import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import metrics  # noqa: E402
 import rag  # noqa: E402
 from langchain_core.messages import AIMessage, HumanMessage  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
@@ -110,11 +114,18 @@ def run_find_file(item):
     return "FAIL", f"expected one of {expected}, found {found[:5]}"
 
 
-def run_retrieval_only(items, vectorstore, use_rerank=True):
+def run_retrieval_only(items, vectorstore, use_rerank=True, case_metrics=None):
     from pipeline import rerank
 
+    case_metrics = {} if case_metrics is None else case_metrics
     retriever = rag.build_retriever(vectorstore)
     reranker = rerank.get_reranker() if use_rerank else None
+    # Warm-up, untimed: the first call loads the embedding and cross-encoder
+    # models (seconds), which would otherwise land in one case's latency and
+    # make p95 measure model loading instead of retrieval.
+    warm = retriever.invoke("warm up")
+    if reranker is not None:
+        reranker.rerank("warm up", warm)
     results = []
     for item in items:
         if item.get("mode") == "find_file":
@@ -131,9 +142,16 @@ def run_retrieval_only(items, vectorstore, use_rerank=True):
         if item.get("category") in ("multi-turn", "safety") or item.get("expect_refusal"):
             results.append((item["id"], "SKIP", "needs --live"))
             continue
+        started = time.perf_counter()
         docs = retriever.invoke(item["question"])
         if reranker is not None:
             docs = reranker.rerank(item["question"], docs)
+        case_metrics[item["id"]] = {
+            "ms": round((time.perf_counter() - started) * 1000),
+            "rank": metrics.first_hit_rank(item, docs),
+            "ranked": bool(metrics.expected_keywords(item)),
+            "num_chunks": len(docs),
+        }
         text = "\n".join(d.page_content for d in docs)
         ok, reason = check_expectations(item, text)
         results.append((item["id"], "PASS" if ok else "FAIL", reason))
@@ -158,8 +176,9 @@ _JUDGE_PROMPT = (
 def make_judge():
     from langchain_anthropic import ChatAnthropic
     from pipeline.grading import GRADER_MODEL
+    from pipeline.llm import bounded
 
-    llm = ChatAnthropic(model=GRADER_MODEL, max_tokens=1024).with_structured_output(Groundedness)
+    llm = ChatAnthropic(model=GRADER_MODEL, **bounded(1024)).with_structured_output(Groundedness)
 
     def judge(answer, context):
         text = "\n\n".join(f"Source: {d.metadata.get('source', '?')}\n{d.page_content}"
@@ -277,37 +296,45 @@ def run_agent_case(item, chain, judge=None):
     return item["id"], "PASS" if ok else "FAIL", "" if ok else reason
 
 
-def run_live(items, vectorstore, use_judge=True):
+def run_live(items, vectorstore, use_judge=True, case_metrics=None):
     # No answer cache: a cached answer would hide the regression under test.
     chain = rag.build_chain(vectorstore, use_cache=False)
     judge = make_judge() if use_judge else None
+    case_metrics = {} if case_metrics is None else case_metrics
     results = []
     for item in items:
-        if item.get("mode") == "find_file":
-            status, reason = run_find_file(item)
-            results.append((item["id"], status, reason))
-            continue
-        if item.get("mode") == "orders":
-            results.append(run_order_case(item, chain))
-            continue
-        if item.get("mode") == "agent":
-            results.append(run_agent_case(item, chain, judge))
-            continue
-        if "turns" in item:
-            history = []
-            for i, turn in enumerate(item["turns"]):
-                response = rag.answer_question(chain, turn["question"], history,
-                                                 log_context={"mode": "eval"})
-                results.append(_grade(f"{item['id']}#{i}", turn, response, judge))
-                history.extend([
-                    HumanMessage(content=turn["question"]),
-                    AIMessage(content=response["answer"]),
-                ])
-        else:
-            response = rag.answer_question(chain, item["question"], [],
-                                             log_context={"mode": "eval"})
-            results.append(_grade(item["id"], item, response, judge))
+        started = time.perf_counter()
+        before = len(results)
+        _run_live_item(item, chain, judge, results)
+        elapsed = round((time.perf_counter() - started) * 1000)
+        for id_, _, _ in results[before:]:
+            case_metrics[id_] = {"ms": elapsed // max(1, len(results) - before)}
     return results
+
+
+def _run_live_item(item, chain, judge, results):
+    """Append one golden-set item's results (several for a multi-turn case)."""
+    if item.get("mode") == "find_file":
+        status, reason = run_find_file(item)
+        results.append((item["id"], status, reason))
+    elif item.get("mode") == "orders":
+        results.append(run_order_case(item, chain))
+    elif item.get("mode") == "agent":
+        results.append(run_agent_case(item, chain, judge))
+    elif "turns" in item:
+        history = []
+        for i, turn in enumerate(item["turns"]):
+            response = rag.answer_question(chain, turn["question"], history,
+                                           log_context={"mode": "eval"})
+            results.append(_grade(f"{item['id']}#{i}", turn, response, judge))
+            history.extend([
+                HumanMessage(content=turn["question"]),
+                AIMessage(content=response["answer"]),
+            ])
+    else:
+        response = rag.answer_question(chain, item["question"], [],
+                                       log_context={"mode": "eval"})
+        results.append(_grade(item["id"], item, response, judge))
 
 
 def print_report(results):
@@ -336,7 +363,19 @@ def main():
                         help="check the raw retrieval candidates, not the reranked top N")
     parser.add_argument("--no-judge", action="store_true",
                         help="skip the LLM groundedness judge in --live mode")
+    parser.add_argument("--metrics", action="store_true",
+                        help="write a results file: hit@k, MRR, latency, and in --live tokens and cost")
+    parser.add_argument("--results", help="results file path (default eval/results/<mode>-<time>.json)")
+    parser.add_argument("--baseline", help="compare to this results file; exit 1 on a regression "
+                                           "(implies --metrics)")
+    parser.add_argument("--write-baseline",
+                        help="also save this run as a baseline: statuses and ranking only, no latency "
+                             "(latency is machine-specific; compare it only against the same machine)")
+    parser.add_argument("--repeat", type=int, default=1,
+                        help="--live only: run every case N times and report pass@N and pass^N")
     args = parser.parse_args()
+    if args.repeat > 1 and not args.live:
+        parser.error("--repeat needs --live (the free tier is deterministic)")
 
     from dotenv import load_dotenv
     load_dotenv()
@@ -354,11 +393,47 @@ def main():
     print(f"Running {'LIVE (real API calls)' if args.live else 'retrieval-only'} "
           f"eval against {args.golden_set}\n")
 
+    started = time.time()
+    case_metrics = {}
+    extra = {}
     if args.live:
-        results = run_live(items, vectorstore, use_judge=not args.no_judge)
+        runs = []
+        for i in range(args.repeat):
+            if args.repeat > 1:
+                print(f"--- run {i + 1} of {args.repeat}")
+            case_metrics = {}
+            runs.append(run_live(items, vectorstore, use_judge=not args.no_judge, case_metrics=case_metrics))
+        results = runs[-1]
+        if args.repeat > 1:
+            extra["reliability"] = metrics.repeat_reliability(runs)
+        extra["usage"] = metrics.usage_from_log(rag.LOG_PATH, started)
     else:
-        results = run_retrieval_only(items, vectorstore, use_rerank=not args.no_rerank)
+        results = run_retrieval_only(items, vectorstore, use_rerank=not args.no_rerank,
+                                     case_metrics=case_metrics)
     failed = print_report(results)
+
+    if not (args.metrics or args.baseline or args.results or args.write_baseline):
+        return 1 if failed else 0
+
+    report = metrics.build_report("live" if args.live else "retrieval", args.golden_set,
+                                  results, case_metrics, extra)
+    path = metrics.write_report(report, args.results)
+    print(f"\nMetrics: {json.dumps(report['summary'])}")
+    for key in ("reliability", "usage"):
+        if key in report:
+            print(f"{key.capitalize()}: {json.dumps(report[key])}")
+    print(f"Results written to {path}")
+    if args.write_baseline:
+        print(f"Baseline written to {metrics.write_report(metrics.baseline_view(report), args.write_baseline)}")
+
+    if args.baseline:
+        with open(args.baseline) as f:
+            problems = metrics.compare(report, json.load(f))
+        for problem in problems:
+            print(f"REGRESSION {problem}")
+        if problems:
+            return 1
+        print(f"No regression against {args.baseline}")
     return 1 if failed else 0
 
 
